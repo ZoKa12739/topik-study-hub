@@ -17,7 +17,7 @@ This repository is version-controlled and published at <https://github.com/ZoKa1
 | `docs/PRODUCT_SPEC.md` | **Authoritative product spec** (v1.10). Features, pages, data model, decisions D1–D16, 8-phase roadmap in ch.10 |
 | `design/DESIGN.md` | **Authoritative visual spec** (v1.4). Color/type/spacing tokens, the 10 Linear-derived rules, D-1…D-5 stages, known gotchas |
 | `docs/Toolkit_Design_Proposal.md` | The original outline. Historical — superseded by `PRODUCT_SPEC.md` |
-| `task_plan.md` / `findings.md` / `progress.md` | Session logs from the first work session. **Stale before 2026-10-06** — treat as history, not plan |
+| `docs/task_plan.md` / `docs/findings.md` / `docs/progress.md` | Session logs from the first work session. **Stale before 2026-10-06** — treat as history, not plan |
 
 When the code and a plan disagree, the plans are usually right about *intent* and the code about *current state*; fix whichever is wrong and say which.
 

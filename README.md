@@ -120,7 +120,7 @@ Pretendard **不含简体中文字形**（实测 11/11 缺失），中文必须�
 - `design/DESIGN.md` —— 权威视觉规格
 - `CLAUDE.md` —— 给 coding agent 的项目说明：架构、踩过的坑、每条踩坑背后的实测证据
 - `docs/Toolkit_Design_Proposal.md` —— 最初的构想稿，已被 `PRODUCT_SPEC.md` 取代
-- `task_plan.md` / `findings.md` / `progress.md` —— 第一次开发会话的日志，是历史记录而非当前计划
+- `docs/task_plan.md` / `docs/findings.md` / `docs/progress.md` —— 第一次开发会话的日志，是历史记录而非当前计划
 
 ## 许可
 

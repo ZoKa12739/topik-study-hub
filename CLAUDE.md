@@ -8,7 +8,7 @@ A local-first desktop toolkit for TOPIK Korean exam prep: PySide6 GUI, SQLite pe
 
 All user-facing strings are **Chinese**, and so are the docs. Keep code identifiers and comments in English.
 
-There is no git repository here. Edits are not version-controlled — be deliberate about overwriting files, and keep the docs below in sync when behavior changes.
+This repository is version-controlled and published at <https://github.com/ZoKa12739/topik-study-hub> (`main`, public). Commit changes as you go, and keep the docs below in sync when behavior changes. **`data/` is gitignored** — the database, audio library and recordings are *not* versioned, so a destructive mistake there is still unrecoverable: be deliberate about overwriting anything under `data/`.
 
 ### Two plans, and which one is authoritative
 

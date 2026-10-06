@@ -1,0 +1,40 @@
+# ── Python ────────────────────────────────────────────────────────────
+__pycache__/
+*.py[cod]
+*$py.class
+
+# ── 虚拟环境 ──────────────────────────────────────────────────────────
+.venv/
+venv/
+env/
+
+# ── 本地私人数据，不进仓库 ────────────────────────────────────────────
+# study_hub.db（学习记录）、backup/（迁移快照）、audio/（音频库）、
+# recordings/（跟读录音）、snippets/（粘贴进来的图片）。
+# 全部由 core/database.py 在首次运行时自动创建，clone 下来不需要这些目录。
+data/
+
+# ── Pretendard 字体包：只留 ui/fonts.py 实际加载的 4 个字重 ────────────
+# 许可 SIL OFL 1.1，见 design/Pretendard-1.3.9/LICENSE.txt，允许随软件分发。
+design/Pretendard-1.3.9/public/static/*
+!design/Pretendard-1.3.9/public/static/Pretendard-Regular.otf
+!design/Pretendard-1.3.9/public/static/Pretendard-Medium.otf
+!design/Pretendard-1.3.9/public/static/Pretendard-SemiBold.otf
+!design/Pretendard-1.3.9/public/static/Pretendard-Bold.otf
+design/Pretendard-1.3.9/public/variable/
+design/Pretendard-1.3.9/web/
+
+# ── 第三方素材 ────────────────────────────────────────────────────────
+# Linear 界面截图，仅作为视觉语言参考，版权不属于本项目
+design/references/
+
+# ── 工具 / agent 运行时状态 ───────────────────────────────────────────
+.omc/
+.agents/
+.workbuddy/
+
+# ── 编辑器 / 系统 ─────────────────────────────────────────────────────
+.vscode/
+.idea/
+Thumbs.db
+desktop.ini

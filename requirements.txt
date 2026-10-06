@@ -1,0 +1,4 @@
+PySide6
+PyMuPDF
+ffmpeg-python
+schedule

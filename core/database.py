@@ -155,7 +155,8 @@ class StudyDatabase:
             name TEXT NOT NULL,
             source_path TEXT,
             imported_at TEXT NOT NULL DEFAULT CURRENT_TIMESTAMP,
-            item_count INTEGER NOT NULL DEFAULT 0
+            item_count INTEGER NOT NULL DEFAULT 0,
+            sort_order INTEGER NOT NULL DEFAULT 0
         );
 
         CREATE TABLE IF NOT EXISTS words (
@@ -381,6 +382,9 @@ class StudyDatabase:
             "created_at": "TEXT",
             "ref_type": "TEXT",
             "ref_id": "INTEGER",
+        },
+        "word_lists": {
+            "sort_order": "INTEGER NOT NULL DEFAULT 0",
         },
         # v6：每份播放列表配两份 PDF（原文 / 解析），见 PRODUCT_SPEC 4.3
         # v7：两份 PDF 各自记住读到第几页（"接着上次读"）
@@ -1078,9 +1082,13 @@ class StudyDatabase:
                 )
                 self.connection.execute("DELETE FROM words WHERE list_id = ?", (list_id,))
             else:
+                next_order = self.connection.execute(
+                    "SELECT COALESCE(MAX(CASE WHEN COALESCE(sort_order, 0) > 0 THEN sort_order ELSE id END), 0) + 1 "
+                    "FROM word_lists"
+                ).fetchone()[0]
                 cursor = self.connection.execute(
-                    "INSERT INTO word_lists (name, source_path, item_count) VALUES (?, ?, ?)",
-                    (name, source_path, len(cleaned)),
+                    "INSERT INTO word_lists (name, source_path, item_count, sort_order) VALUES (?, ?, ?, ?)",
+                    (name, source_path, len(cleaned), next_order),
                 )
                 list_id = cursor.lastrowid
 
@@ -1133,6 +1141,15 @@ class StudyDatabase:
             self.connection.execute("DELETE FROM word_lists WHERE id = ?", (list_id,))
         return {"name": row["name"], "count": removed}
 
+    def reorder_word_lists(self, list_ids):
+        """按给定顺序更新词表排序（1 起）。"""
+        with self.connection:
+            for order, list_id in enumerate(list_ids, start=1):
+                self.connection.execute(
+                    "UPDATE word_lists SET sort_order = ? WHERE id = ?",
+                    (order, int(list_id)),
+                )
+
     def list_word_lists(self):
         """全部词表 + 进度摘要。供词表选择器与元信息条使用。"""
         return [
@@ -1140,11 +1157,12 @@ class StudyDatabase:
             for row in self.connection.execute(
                 """
                 SELECT wl.id, wl.name, wl.source_path, wl.imported_at, wl.item_count,
+                       COALESCE(wl.sort_order, 0) AS sort_order,
                        COALESCE(p.cursor_seq, 0) AS cursor_seq, p.last_drilled_at,
                        p.updated_at AS progress_updated_at
                 FROM word_lists wl
                 LEFT JOIN word_list_progress p ON p.list_id = wl.id
-                ORDER BY wl.id
+                ORDER BY CASE WHEN COALESCE(wl.sort_order, 0) > 0 THEN wl.sort_order ELSE wl.id END, wl.id
                 """
             ).fetchall()
         ]
@@ -1202,7 +1220,7 @@ class StudyDatabase:
                 FROM words w
                 JOIN word_lists wl ON wl.id = w.list_id
                 LEFT JOIN word_notes n ON n.word_key = w.word_key
-                ORDER BY wl.id, w.seq, w.id
+                ORDER BY CASE WHEN COALESCE(wl.sort_order, 0) > 0 THEN wl.sort_order ELSE wl.id END, wl.id, w.seq, w.id
                 """
             ).fetchall()
         ]

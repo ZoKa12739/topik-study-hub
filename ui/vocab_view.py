@@ -38,7 +38,7 @@
 import os
 from pathlib import Path
 
-from PySide6.QtCore import QEvent, QTimer, Qt
+from PySide6.QtCore import QEvent, QPoint, QSize, QTimer, Qt, Signal
 from PySide6.QtGui import QColor, QFont, QKeySequence, QShortcut
 from PySide6.QtWidgets import (
     QApplication,
@@ -49,6 +49,8 @@ from PySide6.QtWidgets import (
     QHeaderView,
     QLabel,
     QLineEdit,
+    QListWidget,
+    QListWidgetItem,
     QMenu,
     QMessageBox,
     QPushButton,
@@ -91,6 +93,230 @@ _JUDGE_KEYS = (("1", "known"), ("2", "fuzzy"), ("3", "unknown"))
 
 def state_color(state):
     return _STATE_COLORS.get(state or "", _STATE_COLORS[""])
+
+
+class _WordListDeleteButton(QPushButton):
+    """词表展开列表行末的 × 删除按钮。"""
+
+    def __init__(self, parent=None):
+        super().__init__(parent)
+        self.setObjectName("wordListDeleteBtn")
+        self.setFixedSize(22, 22)
+        self.setCursor(Qt.PointingHandCursor)
+        self.setFocusPolicy(Qt.NoFocus)
+        self.setToolTip("删除此词表")
+        self._normal_icon = icon("x", TEXT_COLORS["muted"], 12)
+        self._hover_icon = icon("x", STATE_COLORS["danger"], 12)
+        self.setIcon(self._normal_icon)
+        self.setIconSize(QSize(12, 12))
+
+    def enterEvent(self, event):
+        self.setIcon(self._hover_icon)
+        super().enterEvent(event)
+
+    def leaveEvent(self, event):
+        self.setIcon(self._normal_icon)
+        super().leaveEvent(event)
+
+
+class _WordListRowWidget(QWidget):
+    """词表展开列表单行：左侧词表名（透传鼠标事件供列表拖拽/点击），右侧 × 删除按钮。"""
+
+    def __init__(self, text, list_id, on_delete, parent=None):
+        super().__init__(parent)
+        layout = QHBoxLayout(self)
+        layout.setContentsMargins(10, 4, 6, 4)
+        layout.setSpacing(8)
+
+        self.label = QLabel(text)
+        self.label.setObjectName("wordListItemText")
+        self.label.setAttribute(Qt.WA_TransparentForMouseEvents, True)
+        layout.addWidget(self.label, 1)
+
+        if list_id is not None:
+            self.setToolTip("上下拖动可调整词表顺序")
+            btn = _WordListDeleteButton(self)
+            btn.clicked.connect(lambda _checked=False, lid=list_id: on_delete(lid))
+            layout.addWidget(btn, 0, Qt.AlignVCenter)
+
+
+class _WordListPopupList(QListWidget):
+    """支持拖拽排序（首项「全部词表」固定在顶部）与点击选择的词表弹出列表。"""
+
+    item_activated = Signal(int)
+    order_changed = Signal(list)
+
+    def __init__(self, on_delete, parent=None):
+        super().__init__(parent)
+        self.setObjectName("wordListPopupView")
+        self.setMouseTracking(True)
+        self.setHorizontalScrollBarPolicy(Qt.ScrollBarAlwaysOff)
+        self.setVerticalScrollMode(QListWidget.ScrollPerPixel)
+        self._on_delete = on_delete
+        self._entries = []
+        self._press_pos = QPoint()
+        self._press_row = -1
+        self._drag_row = -1
+        self._dragging = False
+
+    def populate(self, entries, selected_row=0):
+        self._entries = list(entries)
+        self.clear()
+        for text, list_id in self._entries:
+            item = QListWidgetItem(self)
+            item.setSizeHint(QSize(0, 32))
+            item.setData(Qt.UserRole, list_id)
+            self.addItem(item)
+            row_widget = _WordListRowWidget(text, list_id, self._on_delete, self)
+            self.setItemWidget(item, row_widget)
+        if 0 <= selected_row < self.count():
+            self.setCurrentRow(selected_row)
+
+    def mousePressEvent(self, event):
+        if event.button() == Qt.LeftButton:
+            pos = event.position().toPoint()
+            item = self.itemAt(pos)
+            row = self.row(item) if item is not None else -1
+            self._press_pos = pos
+            self._press_row = row
+            # 第 0 项「全部词表」固定在顶部，不参与拖动
+            self._drag_row = row if row >= 1 else -1
+            self._dragging = False
+            if row >= 0:
+                self.setCurrentRow(row)
+            event.accept()
+            return
+        super().mousePressEvent(event)
+
+    def mouseMoveEvent(self, event):
+        if (event.buttons() & Qt.LeftButton) and self._drag_row >= 1:
+            pos = event.position().toPoint()
+            if not self._dragging:
+                if (pos - self._press_pos).manhattanLength() >= QApplication.startDragDistance():
+                    self._dragging = True
+                    self.viewport().setCursor(Qt.ClosedHandCursor)
+            if self._dragging and self.count() > 2:
+                clamped_y = max(0, min(self.viewport().height() - 1, pos.y()))
+                target_item = self.itemAt(QPoint(12, clamped_y))
+                if target_item is not None:
+                    target_row = self.row(target_item)
+                else:
+                    target_row = self.count() - 1 if pos.y() >= self.viewport().height() else 1
+                target_row = max(1, min(self.count() - 1, target_row))
+                if target_row != self._drag_row:
+                    entry = self._entries.pop(self._drag_row)
+                    self._entries.insert(target_row, entry)
+                    self._drag_row = target_row
+                    self.populate(self._entries, selected_row=target_row)
+            event.accept()
+            return
+        super().mouseMoveEvent(event)
+
+    def mouseReleaseEvent(self, event):
+        if event.button() == Qt.LeftButton:
+            self.viewport().unsetCursor()
+            was_dragging = self._dragging
+            press_row = self._press_row
+            self._dragging = False
+            self._drag_row = -1
+            self._press_row = -1
+            if was_dragging:
+                self.order_changed.emit(list(self._entries))
+            else:
+                pos = event.position().toPoint()
+                item = self.itemAt(pos)
+                release_row = self.row(item) if item is not None else -1
+                if release_row >= 0 and release_row == press_row:
+                    self.item_activated.emit(release_row)
+            event.accept()
+            return
+        super().mouseReleaseEvent(event)
+
+
+class WordListComboBox(QComboBox):
+    """词表下拉框：展开列表支持拖动调整词表顺序，以及在每份词表右侧显示 × 删除按钮。"""
+
+    order_changed = Signal(list)
+    delete_requested = Signal(int)
+
+    def __init__(self, parent=None):
+        super().__init__(parent)
+        self._popup = _WordListPopup(self)
+
+    def showPopup(self):
+        if self.count() == 0:
+            return
+        self._popup.open_for_combo()
+
+    def hidePopup(self):
+        if self._popup.isVisible():
+            self._popup.hide()
+        super().hidePopup()
+
+
+class _WordListPopup(QFrame):
+    """WordListComboBox 的自定义弹出层。"""
+
+    def __init__(self, combo: WordListComboBox):
+        super().__init__(combo, Qt.Popup | Qt.FramelessWindowHint | Qt.NoDropShadowWindowHint)
+        self.setObjectName("wordListPopup")
+        self._combo = combo
+
+        layout = QVBoxLayout(self)
+        layout.setContentsMargins(0, 0, 0, 0)
+        layout.setSpacing(0)
+
+        self.list_widget = _WordListPopupList(self._on_delete_clicked, self)
+        self.list_widget.item_activated.connect(self._on_item_activated)
+        self.list_widget.order_changed.connect(self._on_order_changed)
+        layout.addWidget(self.list_widget)
+
+    def open_for_combo(self):
+        entries = [
+            (self._combo.itemText(i), self._combo.itemData(i))
+            for i in range(self._combo.count())
+        ]
+        current_idx = max(0, self._combo.currentIndex())
+        self.list_widget.populate(entries, selected_row=current_idx)
+
+        fm = self._combo.fontMetrics()
+        max_text_w = max((fm.horizontalAdvance(text) for text, _ in entries), default=140)
+        popup_width = max(self._combo.width(), max_text_w + 68)
+        row_count = len(entries)
+        popup_height = min(320, max(42, row_count * 34 + 10))
+        self.setFixedSize(popup_width, popup_height)
+
+        global_pos = self._combo.mapToGlobal(QPoint(0, self._combo.height() + 2))
+        self.move(global_pos)
+        self.show()
+        self.list_widget.setFocus()
+
+    def _on_item_activated(self, row):
+        self.hide()
+        if 0 <= row < self._combo.count():
+            self._combo.setCurrentIndex(row)
+
+    def _on_order_changed(self, entries):
+        current_data = self._combo.currentData()
+        self._combo.blockSignals(True)
+        self._combo.clear()
+        new_index = 0
+        ordered_ids = []
+        for idx, (text, data) in enumerate(entries):
+            self._combo.addItem(text, data)
+            if data == current_data:
+                new_index = idx
+            if isinstance(data, int):
+                ordered_ids.append(data)
+        self._combo.setCurrentIndex(new_index)
+        self._combo.blockSignals(False)
+        self.list_widget.setCurrentRow(new_index)
+        self._combo.order_changed.emit(ordered_ids)
+
+    def _on_delete_clicked(self, list_id):
+        self.hide()
+        if isinstance(list_id, int):
+            self._combo.delete_requested.emit(list_id)
 
 
 class VocabView(QWidget):
@@ -220,10 +446,12 @@ class VocabView(QWidget):
         bar = QHBoxLayout()
         bar.setSpacing(8)
 
-        self.combo_list = QComboBox()
+        self.combo_list = WordListComboBox()
         self.combo_list.setMinimumWidth(190)
-        self.combo_list.setToolTip("决定了过词与专攻的作业范围")
+        self.combo_list.setToolTip("决定了过词与专攻的作业范围；展开后可上下拖动调整词表顺序")
         self.combo_list.currentIndexChanged.connect(self._on_list_changed)
+        self.combo_list.order_changed.connect(self._on_list_order_changed)
+        self.combo_list.delete_requested.connect(self.delete_current_list)
         bar.addWidget(self.combo_list)
 
         # 模式切换：浏览 / 过词 / 专攻 三段控件（4.2 核心组件）。
@@ -251,15 +479,6 @@ class VocabView(QWidget):
         self.btn_load_tsv.setIcon(icon("folder-open"))
         self.btn_load_tsv.clicked.connect(self.load_tsv_dialog)
         bar.addWidget(self.btn_load_tsv)
-
-        # 删除词表：危险操作，用 dangerButton 与其他次级按钮区分开。
-        # 「全部词表」不是一份具体词表，没有可删的行——那里它是禁用的。
-        self.btn_delete_list = QPushButton("删除词表")
-        self.btn_delete_list.setObjectName("dangerButton")
-        self.btn_delete_list.setIcon(icon("trash", STATE_COLORS["danger"], 14))
-        self.btn_delete_list.setToolTip("删除当前选中的词表；笔记、状态与重点标记会保留")
-        self.btn_delete_list.clicked.connect(self.delete_current_list)
-        bar.addWidget(self.btn_delete_list)
 
         # 搜索框：规格 4.2 —— 仅浏览模式（过词/专攻要的是专注，不是过滤）
         self.search_input = QLineEdit()
@@ -761,8 +980,20 @@ class VocabView(QWidget):
             button.setChecked(index == self._mode)
 
     def _sync_delete_button(self):
-        """「全部词表」不是一个可删的实体，那里禁用删除。"""
-        self.btn_delete_list.setEnabled(self.current_list_id() is not None)
+        """保留兼容钩子（删除入口已移至词表展开列表右侧）。"""
+        btn = getattr(self, "btn_delete_list", None)
+        if btn is not None:
+            btn.setEnabled(self.current_list_id() is not None)
+
+    def _on_list_order_changed(self, ordered_ids):
+        """词表下拉列表拖动排序落库。"""
+        if not ordered_ids:
+            return
+        self.database.reorder_word_lists(ordered_ids)
+        self._lists = self.database.list_word_lists()
+        # 若当前在「全部词表」下浏览，表格按词表顺序展示，同步刷新
+        if self.current_list_id() is None and self._mode == self.MODE_BROWSE:
+            self.reload_browse()
 
     def refresh(self):
         """数据被外部改动（导入备份、换资料目录）后重读一遍。"""
@@ -849,19 +1080,19 @@ class VocabView(QWidget):
             message += "。这是重新导入，历史笔记、状态与过词断点均已保留。"
         self.banner.show_message("success", message)
 
-    def delete_current_list(self):
-        """删除当前选中的词表。**只删第一层**——笔记与三态原样保留。
+    def delete_current_list(self, target_list_id=None):
+        """删除指定的（或当前选中的）词表。**只删第一层**——笔记与三态原样保留。
 
         破坏性操作，所以弹一次模态确认。`Banner` / `show_toast` 只适合说"发生了什么"，
         不适合问"要不要做"；而模态框会造成"没有事件循环就永久阻塞"的那个老问题在这里
         不成立——确认框是从用户点击里弹出来的，事件循环正在运行。P5 的备份导入确认
         已经开了这个先例（`settings_view.py` 的 `QMessageBox.question`）。
         """
-        list_id = self.current_list_id()
+        list_id = target_list_id if isinstance(target_list_id, int) else self.current_list_id()
         if list_id is None:
             self.banner.show_message("info", "「全部词表」不是一个可删除的词表。")
             return
-        name = self.current_list_name()
+        name = next((row["name"] for row in self._lists if row["id"] == list_id), "") or self.current_list_name()
         counts = self.database.list_counts(list_id)
         confirmed = QMessageBox.question(
             self,
@@ -880,6 +1111,7 @@ class VocabView(QWidget):
         # `_flush_note` 会给一个刚消失的词补建一条再也看不到的孤儿笔记行。
         self._flush_note()
 
+        was_current = (list_id == self.current_list_id())
         removed = self.database.delete_word_list(list_id)
         if removed is None:
             # 选中项本来就来自这个下拉，正常不该发生；外部改过库才可能
@@ -893,7 +1125,10 @@ class VocabView(QWidget):
         # 词表没了，它的断点与专攻队列也就无从谈起。`refresh_lists` 屏蔽了信号，
         # 所以 `set_mode` 必须显式再调一次——否则页面会停在已删词表的过词卡上。
         self.refresh_lists()
-        self.set_mode(self.MODE_BROWSE)
+        if was_current or self.current_list_id() is None:
+            self.set_mode(self.MODE_BROWSE)
+        elif self._mode == self.MODE_BROWSE:
+            self.reload_browse()
 
     # ==================================================================
     # 浏览模式

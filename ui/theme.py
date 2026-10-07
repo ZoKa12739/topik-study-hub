@@ -925,6 +925,55 @@ QDialog#onboardingDialog {{ background: #F6F8F5; }}
 
 /* ---------- P1 单词仓（第 3 期） ---------- */
 
+/* 词表选择器展开弹窗：支持拖拽排序与行末 × 删除 */
+QFrame#wordListPopup {{
+    background: #FFFFFF;
+    border: 1px solid #C6D2C9;
+    border-radius: 6px;
+}}
+
+QListWidget#wordListPopupView {{
+    background: transparent;
+    border: none;
+    outline: 0;
+    padding: 4px;
+}}
+
+QListWidget#wordListPopupView::item {{
+    padding: 0px;
+    margin: 1px 0;
+    border: none;
+    border-radius: 5px;
+    color: #2A322D;
+}}
+
+QListWidget#wordListPopupView::item:hover {{
+    background: #EDF1EC;
+}}
+
+QListWidget#wordListPopupView::item:selected {{
+    background: #E3EBE5;
+    color: #2A322D;
+}}
+
+QLabel#wordListItemText {{
+    background: transparent;
+    color: #2A322D;
+    font-size: 14px;
+}}
+
+QPushButton#wordListDeleteBtn {{
+    background: transparent;
+    border: 1px solid transparent;
+    border-radius: 4px;
+    padding: 0px;
+}}
+
+QPushButton#wordListDeleteBtn:hover {{
+    background: #FAF0EF;
+    border-color: #DFB5B0;
+}}
+
 /* 模式切换：浏览 / 过词 / 专攻 三段控件。
    选中态用 bg-selected 填充 + accent 文字——不给实心强调块（DESIGN.md 差异 2 的纪律：
    高频、低信息量的控件不抢注意力），但文字转 accent 足以表达"你在这一段" */

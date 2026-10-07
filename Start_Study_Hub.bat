@@ -1,2 +1,3 @@
 @echo off
-start "" pythonw main.py
+cd /d "%~dp0"
+start "" pythonw main.py

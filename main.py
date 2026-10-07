@@ -1,5 +1,6 @@
 import sys
 import os
+import ctypes
 from PySide6.QtGui import QIcon
 from PySide6.QtWidgets import QApplication
 from ui.fonts import apply_application_font, register_fonts
@@ -8,6 +9,12 @@ from ui.theme import APP_STYLESHEET
 
 
 def main():
+    if sys.platform == "win32":
+        try:
+            ctypes.windll.shell32.SetCurrentProcessExplicitAppUserModelID("topik.study.hub")
+        except Exception:
+            pass
+
     app = QApplication(sys.argv)
 
     # 字体必须在 QApplication 之后、应用样式表之前注册
@@ -17,10 +24,14 @@ def main():
     app.setStyle("Fusion")
     app.setStyleSheet(APP_STYLESHEET)
 
-    icon_path = os.path.join(os.path.dirname(os.path.abspath(__file__)), "ui", "assets", "app_icon.png")
-    app.setWindowIcon(QIcon(icon_path))
+    assets_dir = os.path.join(os.path.dirname(os.path.abspath(__file__)), "ui", "assets")
+    ico_path = os.path.join(assets_dir, "app_icon.ico")
+    png_path = os.path.join(assets_dir, "app_icon.png")
+    app_icon = QIcon(ico_path if os.path.exists(ico_path) else png_path)
+    app.setWindowIcon(app_icon)
 
     window = MainWindow()
+    window.setWindowIcon(app_icon)
     window.show()
 
     # 首次启动向导（PRODUCT_SPEC 4.7）。只在首次出现；每步可跳过，跳过即用默认值。

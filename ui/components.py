@@ -260,7 +260,9 @@ def make_copyable(label):
     所以过词页的 `1`/`2`/`3`/`Space` 在标签持有焦点时照常生效（已实测）。这一点必须
     成立——这个标签是页面上最容易被点到的东西。
     """
-    label.setTextInteractionFlags(Qt.TextSelectableByMouse | Qt.TextSelectableByKeyboard)
+    # 仅使用 TextSelectableByMouse：支持鼠标拖选和右键复制，
+    # 避免 TextSelectableByKeyboard 导致点击只读文字时出现输入光标
+    label.setTextInteractionFlags(Qt.TextSelectableByMouse)
     label.setContextMenuPolicy(Qt.CustomContextMenu)
     label.customContextMenuRequested.connect(lambda pos: _show_copy_menu(label, pos))
     return label

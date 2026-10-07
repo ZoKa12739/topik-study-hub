@@ -64,61 +64,129 @@ QToolTip {{
 }}
 
 /* ---------- 侧边栏 ---------- */
-/* DESIGN.md L3：窄、底色与应用底同族、选中态只用淡填充，不用强调色、不加粗 */
+/* 视觉收敛：与主背景极小色差、极淡分割线、紧凑导航、低存在感浅色高亮 */
 
-QFrame#sidebar {{ background: #EFF3EF; border-right: 1px solid #DDE5DE; }}
+QFrame#sidebar {{
+    background: #F4F7F4;
+    border-right: 1px solid #E6ECE6;
+}}
+
+QFrame#sidebarDivider {{
+    background: #E6ECE6;
+    border: none;
+    max-height: 1px;
+}}
 
 QLabel#brandTitle {{
     color: #2A322D;
     font-size: 16px;
     font-weight: 600;
+    letter-spacing: -0.2px;
 }}
 
 QLabel#brandSubtitle {{
     color: #98A29C;
+    font-size: 12px;
+}}
+
+/* 侧边栏分组标题（学习、资料） */
+QLabel#navSectionTitleFirst {{
+    color: #98A29C;      /* text-faint */
     font-size: 13px;
+    font-weight: 400;
+    padding-left: 10px;  /* 需与导航项内容对齐 */
+    margin-bottom: 8px;
+}}
+
+QLabel#navSectionTitle {{
+    color: #98A29C;      /* text-faint */
+    font-size: 13px;
+    font-weight: 400;
+    padding-left: 10px;  /* 需与导航项内容对齐 */
+    margin-top: 20px;
+    margin-bottom: 8px;
+}}
+
+/* 导航项按钮样式（对齐 Secondary Navigation 的交互与视觉） */
+QPushButton#navItem {{
+    background: transparent;
+    border: none;
+    border-radius: 6px;
+    padding: 6px 10px;
+    margin: 1px 0;
+    color: #4C5650;
+    font-size: 14px;
+    text-align: left;
+    outline: 0;
+}}
+
+QPushButton#navItem:hover {{
+    background: #EDF2ED;
+    color: #2A322D;
+}}
+
+QPushButton#navItem:checked {{
+    background: #EBF1EC;
+    color: #1F6B57;
+    font-weight: 500;
+}}
+
+QLabel#sidebarFooter {{
+    color: #98A29C;
+    font-size: 11px;
+    padding: 2px 4px;
 }}
 
 QListWidget#navigation {{
     background: transparent;
     border: none;
     color: #4C5650;
-    padding: 8px 6px;
+    padding: 2px 0px;
     outline: 0;
-    font-size: 15px;
+    font-size: 14px;
 }}
 
 QListWidget#navigation::item {{
     border-radius: 6px;
-    padding: 7px 10px;
+    padding: 6px 10px;
     margin: 1px 0;
     color: #4C5650;
 }}
 
-QListWidget#navigation::item:hover {{ background: #EDF1EC; color: #2A322D; }}
-
-/* 选中态带绿调（DESIGN.md §3.6）——仍然不是强调色填充 */
-QListWidget#navigation::item:selected {{
-    background: #E3EBE5;
+QListWidget#navigation::item:hover {{
+    background: #EDF2ED;
     color: #2A322D;
-    font-weight: 400;
 }}
 
-/* 底部设置入口（PRODUCT_SPEC 2.1）。沿用导航项观感：透明底、hover 淡填充、
-   选中态绿调填充，仍然不用强调色、不加粗 */
+/* 选中态：保留浅色高亮，降低存在感，避免过重 */
+QListWidget#navigation::item:selected {{
+    background: #EBF1EC;
+    color: #1F6B57;
+    font-weight: 500;
+}}
+
+/* 底部设置入口（Secondary Navigation）：与主导航项对齐 */
 QPushButton#navSettings {{
     background: transparent;
     border: none;
     border-radius: 6px;
-    padding: 7px 10px;
+    padding: 6px 10px;
     margin: 1px 0;
     color: #4C5650;
-    font-size: 15px;
+    font-size: 14px;
     text-align: left;
 }}
 
-QPushButton#navSettings:hover {{ background: #EDF1EC; color: #2A322D; }}
-QPushButton#navSettings:checked {{ background: #E3EBE5; color: #2A322D; }}
+QPushButton#navSettings:hover {{
+    background: #EDF2ED;
+    color: #2A322D;
+}}
+
+QPushButton#navSettings:checked {{
+    background: #EBF1EC;
+    color: #1F6B57;
+    font-weight: 500;
+}}
 
 /* ---------- 页头 ---------- */
 /* DESIGN.md §3.2：跨度压缩，层级改由明度承担 */
@@ -160,7 +228,37 @@ QLabel#shortcutKey {{
     padding: 2px 8px;
 }}
 
-/* 倒计时：全界面唯一使用暖色的地方（DESIGN.md §6.1） */
+/* 倒计时小卡片：模块化数字展示 */
+QFrame#countdownCard {{
+    background: #FFFFFF;
+    border: 1px solid #DDE5DE;
+    border-radius: 8px;
+}}
+
+QLabel#countdownTarget {{
+    color: #4C5650;
+    font-size: 13px;
+    font-weight: 600;
+}}
+
+QLabel#countdownSub {{
+    color: #98A29C;
+    font-size: 11px;
+}}
+
+QLabel#countdownNumber {{
+    color: #1F6B57;
+    font-size: 28px;
+    font-weight: 700;
+}}
+
+QLabel#countdownUnit {{
+    color: #646E68;
+    font-size: 13px;
+    font-weight: 500;
+    margin-top: 8px;
+}}
+
 QLabel#countdown {{
     color: #8A5F12;
     font-size: 15px;
@@ -339,7 +437,7 @@ QPushButton:pressed {{ background: #E3EBE5; }}
 
 QPushButton:disabled {{
     background: #F4F7F3;
-    border-color: #E4EAE3;
+    border-color: #DDE5DE;
     color: #98A29C;
 }}
 
@@ -422,7 +520,7 @@ QPushButton#recordSegment:hover {{ background: #E3EBE5; }}
 /* ---------- 列表 ---------- */
 /* DESIGN.md §4：删除每行分割线，改用 hover/selected 填充与留白 */
 
-QListWidget {{
+QListWidget, QListView {{
     background: transparent;
     border: 1px solid #DDE5DE;
     border-radius: 8px;
@@ -430,14 +528,16 @@ QListWidget {{
     font-size: 15px;
 }}
 
-QListWidget::item {{
+QListWidget::item, QListView::item {{
     padding: 8px 10px;
+    margin: 1px 2px;
     border: none;
+    border-radius: 6px;
     color: #2A322D;
 }}
 
-QListWidget::item:hover {{ background: #EDF1EC; }}
-QListWidget::item:selected {{ background: #E3EBE5; color: #2A322D; }}
+QListWidget::item:hover, QListView::item:hover {{ background: #EDF1EC; }}
+QListWidget::item:selected, QListView::item:selected {{ background: #E3EBE5; color: #2A322D; }}
 
 QListWidget#taskList {{
     background: transparent;
@@ -446,31 +546,125 @@ QListWidget#taskList {{
 }}
 
 QListWidget#taskList::item {{
-    padding: 6px 4px;
+    padding: 2px 4px;
+    margin: 0;
     border: none;
+    border-radius: 6px;
 }}
 
-/* P3 资料库、P4 碎片列表、P2 播放列表与分段 */
-QListWidget#vaultList, QListWidget#snippetList, QListWidget#trackList,
-QListWidget#segmentList {{ background: #FFFFFF; }}
+QListWidget#taskList::item:selected {{
+    background: transparent;
+}}
 
-/* P2 曲目行与分段行都是两行文字（名称 + 状态/时间），行高由视图给出，
-   这里只收紧行内上下留白——留白多了两行文字会显得散 */
-QListWidget#trackList::item, QListWidget#segmentList::item {{ padding: 6px 10px; }}
-
-/* ---------- PDF 阅读区（P2 对照区） ---------- */
-
-QPdfView#pdfView {{
+QPushButton#taskDeleteButton {{
     background: #FFFFFF;
     border: 1px solid #DDE5DE;
     border-radius: 6px;
+    color: #6A776F;
+    font-size: 13px;
+    font-weight: 400;
+    padding: 2px 8px;
+    min-height: 22px;
+}}
+
+QPushButton#taskDeleteButton:hover {{
+    background: #FAF0EF;
+    border-color: #DFB5B0;
+    color: #B4342B;
+}}
+
+/* ---------- P2 影子跟读：连续工作区与轻量 Toolbar ---------- */
+
+QFrame#shadowingToolbar {{
+    background: transparent;
+    border: none;
+}}
+
+QFrame#shadowingListPanel {{
+    background: #FFFFFF;
+    border: 1px solid #DDE5DE;
+    border-radius: 6px;
+}}
+
+/* 播放列表消除嵌套边框，与外层 panel 一体化 */
+QListWidget#trackList {{
+    background: transparent;
+    border: none;
+    border-radius: 0;
+}}
+
+/* P3 资料库、P4 碎片列表与分段 */
+QListWidget#vaultList, QListWidget#snippetList,
+QListWidget#segmentList {{ background: #FFFFFF; }}
+
+/* P2 曲目行与分段行收紧留白 */
+QListWidget#trackList::item, QListWidget#segmentList::item {{
+    padding: 6px 10px;
+    margin: 1px 2px;
+    border-radius: 5px;
+}}
+QListWidget#trackList::item:hover {{ background: #EDF2ED; }}
+QListWidget#trackList::item:selected {{ background: #EBF1EC; color: #1F6B57; }}
+
+/* ---------- PDF 阅读区（P2 对照区） ---------- */
+/* 消除 Card-in-Card 边框，让 PDF 阅读区以 1px 顶部分割线与标题栏衔接 */
+
+QPdfView#pdfView {{
+    background: #FAFBF9;
+    border: none;
+    border-top: 1px solid #E6ECE6;
+    border-radius: 0;
+}}
+
+/* P2 底部播放器卡片 */
+QFrame#shadowingPlayerCard {{
+    background: #FFFFFF;
+    border: 1px solid #DDE5DE;
+    border-radius: 6px;
+}}
+
+QFrame#shadowingPlayerCard QPushButton {{
+    padding: 4px 10px;
+    font-size: 13px;
+    min-height: 28px;
+    max-height: 28px;
+}}
+
+QFrame#shadowingPlayerCard QPushButton#primaryButton {{
+    padding: 4px 14px;
+    font-size: 13px;
+    min-height: 28px;
+    max-height: 28px;
+}}
+
+QFrame#shadowingPlayerCard QPushButton#iconButton {{
+    padding: 3px 6px;
+    font-size: 13px;
+    min-height: 28px;
+    max-height: 28px;
+}}
+
+QFrame#shadowingPlayerCard QComboBox {{
+    padding: 3px 6px 3px 8px;
+    font-size: 13px;
+    min-height: 26px;
+    max-height: 26px;
+}}
+
+/* P2 工作区分隔条：轻量隐形，悬停反馈 */
+QSplitter#shadowingSplitter::handle {{
+    background: transparent;
+}}
+QSplitter#shadowingSplitter::handle:hover,
+QSplitter#shadowingSplitter::handle:pressed {{
+    background: #DDE5DE;
 }}
 
 /* P2 收起/展开左栏：准备条最左边那个圆角小按钮 */
 QPushButton#edgeToggle {{
     background: #FFFFFF;
     border: 1px solid #DDE5DE;
-    border-radius: 8px;
+    border-radius: 6px;
     color: #4C5650;
     padding: 0;
 }}
@@ -506,8 +700,8 @@ QPushButton#recordButtonActive:hover {{ background: #9C2C24; }}
 /* 底部控制卡里分割"原音 | 录音"的竖线。QFrame 的线在部分样式下用调色板的文字色画，
    所以 `color` 与 `background` 都给上，两边都能落到同一个灰 */
 QFrame#cardDivider {{
-    color: #E4EAE3;
-    background: #E4EAE3;
+    color: #DDE5DE;
+    background: #DDE5DE;
     border: none;
     max-width: 1px;
 }}
@@ -555,10 +749,18 @@ QTableWidget::item, QTableView::item {{
     border: none;
 }}
 
-QTableWidget::item:selected {{ background: #E3EBE5; color: #2A322D; }}
+QTableWidget::item:selected, QTableView::item:selected {{
+    background: #E3EBE5;
+    color: #2A322D;
+}}
+
+QHeaderView {{
+    background: transparent;
+    border: none;
+}}
 
 QHeaderView::section {{
-    background: #F4F7F3;
+    background: #FFFFFF;
     color: #646E68;
     border: none;
     border-bottom: 1px solid #C6D2C9;
@@ -568,8 +770,9 @@ QHeaderView::section {{
 }}
 
 QHeaderView::section:hover {{ color: #2A322D; }}
+QHeaderView::section:checked {{ color: #2A322D; font-weight: 500; }}
 
-QTableCornerButton::section {{ background: #F4F7F3; border: none; }}
+QTableCornerButton::section {{ background: #FFFFFF; border: none; }}
 
 /* ---------- 滑块（P2 进度条） ---------- */
 
@@ -593,10 +796,10 @@ QSlider::handle:horizontal:hover {{ background: #185844; }}
 
 /* ---------- 分隔条 ---------- */
 
-QSplitter::handle {{ background: #E4EAE3; }}
+QSplitter::handle {{ background: #DDE5DE; }}
 QSplitter::handle:horizontal {{ width: 1px; }}
 QSplitter::handle:vertical {{ height: 1px; }}
-QSplitter::handle:hover {{ background: #C6D2C9; }}
+QSplitter::handle:hover, QSplitter::handle:pressed {{ background: #C6D2C9; }}
 
 /* ---------- 日期输入（P5 考试日期） ---------- */
 /* 复用与 QComboBox 完全相同的取值，不引入新 token */
@@ -651,6 +854,7 @@ QScrollBar::handle:vertical {{
 }}
 
 QScrollBar::handle:vertical:hover {{ background: #ADBCB1; }}
+QScrollBar::handle:vertical:pressed {{ background: #98A29C; }}
 
 QScrollBar:horizontal {{
     background: transparent;
@@ -666,6 +870,9 @@ QScrollBar::handle:horizontal {{
     margin: 2px;
 }}
 
+QScrollBar::handle:horizontal:hover {{ background: #ADBCB1; }}
+QScrollBar::handle:horizontal:pressed {{ background: #98A29C; }}
+
 QScrollBar::add-line, QScrollBar::sub-line {{
     width: 0;
     height: 0;
@@ -674,6 +881,11 @@ QScrollBar::add-line, QScrollBar::sub-line {{
 }}
 
 QScrollBar::add-page, QScrollBar::sub-page {{ background: none; }}
+
+QAbstractScrollArea::corner {{
+    background: transparent;
+    border: none;
+}}
 
 /* ---------- 菜单与弹窗 ---------- */
 
@@ -718,12 +930,69 @@ QPushButton#modeSwitch:checked {{
     color: #1F6B57;
 }}
 
-/* 过词/专攻卡：全屏接管的单卡。字号跨到 56px 是**刻意的例外**——
-   DESIGN.md §3.2 的窄字号跨度是为"扫读列表"定的，而这里是"一屏一个词、
-   隔着半米也要看清"，两者的阅读距离不同，取值自然不能共用 */
+/* 过词/专攻实体卡片 */
+QFrame#vocabCard {{
+    background: #FFFFFF;
+    border: 1px solid #DDE5DE;
+    border-radius: 12px;
+}}
+
+QLabel#vocabCardMeta {{
+    color: #98A29C;
+    font-size: 12px;
+    font-weight: 500;
+}}
+
+QLabel#vocabCardProgress {{
+    color: #98A29C;
+    font-size: 12px;
+}}
+
+QLabel#vocabCardPos {{
+    color: #646E68;
+    background: #F0F4F1;
+    border: 1px solid #E1E8E3;
+    border-radius: 4px;
+    padding: 2px 8px;
+    font-size: 12px;
+    font-weight: 500;
+}}
+
+QFrame#vocabCardNoteBox {{
+    background: #F7FAF8;
+    border-left: 3px solid #CBD5CF;
+    border-radius: 4px;
+    margin: 4px 16px;
+}}
+
+QLabel#vocabCardNoteText {{
+    color: #646E68;
+    font-size: 13px;
+}}
+
+QFrame#vocabDrillNoteBox {{
+    background: #F9FAF8;
+    border: 1px solid #E1E8E3;
+    border-radius: 6px;
+    margin: 4px 8px;
+}}
+
+QLabel#vocabCardNoteHeader {{
+    color: #98A29C;
+    font-size: 11px;
+    font-weight: 500;
+}}
+
+QLabel#vocabCardHint {{
+    color: #98A29C;
+    font-size: 11px;
+    margin-top: 4px;
+}}
+
+/* 过词/专攻卡：居中主体文字 */
 QLabel#quizWord {{
     font-family: "Pretendard", "Microsoft YaHei UI", sans-serif;
-    font-size: 56px;
+    font-size: 42px;
     font-weight: 600;
     color: #2A322D;
 }}
@@ -813,8 +1082,8 @@ QPushButton#chipRemove {{
 }}
 QPushButton#chipRemove:hover {{ background: #F2F5F1; }}
 
-/* 详情侧栏的滚动容器：border 由内部 QFrame#surface 承担，这里再画一圈就是双线 */
-QScrollArea#detailScroll {{ border: none; background: transparent; }}
+/* 详情侧栏与设置页的滚动容器：border 由内部 QFrame#surface 承担，这里再画一圈就是双线 */
+QScrollArea#detailScroll, QScrollArea#settingsScroll {{ border: none; background: transparent; }}
 
 /* ---------- 碎片/预览占位 ---------- */
 
@@ -862,7 +1131,7 @@ QLabel#toastSuccess {{ background: #E9F4EE; border: 1px solid #A9D2BC; }}
 
 /* 行内进度：细条，配合 InlineProgress 的固定高度 4px */
 QProgressBar#progressInline {{
-    background: #E4EAE3;
+    background: #DDE5DE;
     border: none;
     border-radius: 2px;
 }}

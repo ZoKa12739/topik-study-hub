@@ -1,3 +1,5 @@
+from pathlib import Path
+
 from PySide6.QtWidgets import (
     QFrame,
     QHBoxLayout,
@@ -10,13 +12,112 @@ from PySide6.QtWidgets import (
     QVBoxLayout,
     QWidget,
 )
-from PySide6.QtCore import QSize, Qt
-from PySide6.QtGui import QKeySequence, QShortcut
+from PySide6.QtCore import QSize, Qt, Signal
+from PySide6.QtGui import QKeySequence, QPixmap, QShortcut
 
 from core.database import StudyDatabase
 from ui.icons import nav_icon
 from ui.planner_view import PlannerView
 from ui.settings_view import SettingsView
+
+
+class NavigationItemProxy:
+    """保持对 QListWidgetItem 类似接口的兼容性。"""
+
+    def __init__(self, text, icon):
+        self._text = text
+        self._icon = icon
+
+    def text(self):
+        return self._text
+
+    def icon(self):
+        return self._icon
+
+
+class NavigationWidget(QWidget):
+    """侧边栏主导航（支持分组标题、精准左对齐与统一按钮样式）。"""
+
+    currentRowChanged = Signal(int)
+
+    def __init__(self, parent=None):
+        super().__init__(parent)
+        self.box = QVBoxLayout(self)
+        self.box.setContentsMargins(0, 0, 0, 0)
+        self.box.setSpacing(2)
+
+        self._buttons = []
+        self._current_row = -1
+
+        # 分组 1：学习
+        self.lbl_study = QLabel("学习")
+        self.lbl_study.setObjectName("navSectionTitleFirst")
+        self.box.addWidget(self.lbl_study)
+
+        # 分组 2：资料
+        self.lbl_materials = QLabel("资料")
+        self.lbl_materials.setObjectName("navSectionTitle")
+
+    def addItem(self, item_or_icon, title=""):
+        if hasattr(item_or_icon, "text"):
+            title = item_or_icon.text()
+            icon_obj = item_or_icon.icon()
+        else:
+            icon_obj = item_or_icon
+
+        index = len(self._buttons)
+        if index == 3:
+            self.box.addWidget(self.lbl_materials)
+
+        btn = QPushButton(title)
+        btn.setObjectName("navItem")
+        btn.setIcon(icon_obj)
+        btn.setIconSize(QSize(16, 16))
+        btn.setCheckable(True)
+        btn.setCursor(Qt.PointingHandCursor)
+        btn.setFixedHeight(32)
+        btn.clicked.connect(lambda _, idx=index: self.setCurrentRow(idx))
+
+        self._buttons.append(btn)
+        self.box.addWidget(btn)
+
+    def count(self):
+        return len(self._buttons)
+
+    def item(self, index):
+        if 0 <= index < len(self._buttons):
+            btn = self._buttons[index]
+            return NavigationItemProxy(btn.text(), btn.icon())
+        return None
+
+    def currentRow(self):
+        return self._current_row
+
+    def setCurrentRow(self, index):
+        if index == self._current_row:
+            if index >= 0 and not self._buttons[index].isChecked():
+                self._buttons[index].setChecked(True)
+            return
+        self._current_row = index
+        for i, btn in enumerate(self._buttons):
+            btn.setChecked(i == index)
+        if index >= 0:
+            self.currentRowChanged.emit(index)
+
+    def clearSelection(self):
+        self.setCurrentRow(-1)
+
+    def keyPressEvent(self, event):
+        if event.key() == Qt.Key_Down:
+            nxt = min(len(self._buttons) - 1, max(0, self._current_row + 1))
+            self.setCurrentRow(nxt)
+            event.accept()
+        elif event.key() == Qt.Key_Up:
+            prev = max(0, self._current_row - 1)
+            self.setCurrentRow(prev)
+            event.accept()
+        else:
+            super().keyPressEvent(event)
 
 
 class MainWindow(QMainWindow):
@@ -45,38 +146,66 @@ class MainWindow(QMainWindow):
 
         sidebar = QFrame()
         sidebar.setObjectName("sidebar")
-        sidebar.setFixedWidth(240)
+        sidebar.setFixedWidth(228)
         sidebar_layout = QVBoxLayout(sidebar)
-        sidebar_layout.setContentsMargins(14, 18, 14, 14)
-        sidebar_layout.setSpacing(6)
+        sidebar_layout.setContentsMargins(12, 16, 12, 12)
+        sidebar_layout.setSpacing(0)
 
-        brand = QLabel("TOPIK\nStudy Hub")
-        brand.setObjectName("brandTitle")
-        brand.setAlignment(Qt.AlignLeft | Qt.AlignVCenter)
-        sidebar_layout.addWidget(brand)
-        subtitle = QLabel("把今天的努力，变成看得见的进步")
-        subtitle.setObjectName("brandSubtitle")
-        subtitle.setWordWrap(True)
-        sidebar_layout.addWidget(subtitle)
+        # 品牌区域（物理隔离、像素级垂直对齐线、16px 品牌字号）
+        brand_container = QWidget()
+        brand_layout = QHBoxLayout(brand_container)
+        brand_layout.setContentsMargins(0, 0, 0, 0)
+        brand_layout.setSpacing(0)
 
-        self.sidebar = QListWidget()
-        self.sidebar.setObjectName("navigation")
-        # 导航项文字较宽时会渲染出水平滚动条（见 DESIGN.md 差异 2）
-        self.sidebar.setHorizontalScrollBarPolicy(Qt.ScrollBarAlwaysOff)
-        sidebar_layout.addWidget(self.sidebar, 1)
+        icon_box = QWidget()
+        icon_box.setFixedWidth(29)
+        ib_lay = QHBoxLayout(icon_box)
+        ib_lay.setContentsMargins(9, 0, 2, 0)
+        ib_lay.setSpacing(0)
 
-        # 底部设置入口（PRODUCT_SPEC 2.1：导航列表之下、页脚之上）。
-        # 它不属于五个模块，因此不进导航列表，而是单独一个可选中按钮。
+        icon_label = QLabel()
+        icon_label.setObjectName("brandIcon")
+        icon_path = Path(__file__).resolve().parent / "assets" / "app_icon.png"
+        if icon_path.exists():
+            pm = QPixmap(str(icon_path)).scaled(
+                18, 18, Qt.KeepAspectRatio, Qt.SmoothTransformation
+            )
+            icon_label.setPixmap(pm)
+            icon_label.setFixedSize(18, 18)
+        ib_lay.addWidget(icon_label)
+        brand_layout.addWidget(icon_box)
+
+        brand_title = QLabel("TOPIK Study Hub")
+        brand_title.setObjectName("brandTitle")
+        brand_layout.addWidget(brand_title)
+        brand_layout.addStretch()
+
+        sidebar_layout.addWidget(brand_container)
+        sidebar_layout.addSpacing(24)
+
+        self.sidebar = NavigationWidget()
+        sidebar_layout.addWidget(self.sidebar)
+        sidebar_layout.addStretch(1)
+
+        # 底部 Secondary Navigation 分组（P0：极淡分割线 + 设置与数据）
+        sec_divider = QFrame()
+        sec_divider.setObjectName("sidebarDivider")
+        sec_divider.setFixedHeight(1)
+        sidebar_layout.addWidget(sec_divider)
+        sidebar_layout.addSpacing(4)
+
         self.btn_settings = QPushButton("设置与数据")
         self.btn_settings.setObjectName("navSettings")
         self.btn_settings.setIcon(nav_icon("settings"))
+        self.btn_settings.setIconSize(QSize(16, 16))
         self.btn_settings.setCheckable(True)
         self.btn_settings.setCursor(Qt.PointingHandCursor)
+        self.btn_settings.setFixedHeight(32)
         self.btn_settings.clicked.connect(self.open_settings)
         sidebar_layout.addWidget(self.btn_settings)
 
         footer = QLabel("本地优先 · 学习记录保存在此设备")
-        footer.setObjectName("brandSubtitle")
+        footer.setObjectName("sidebarFooter")
         footer.setWordWrap(True)
         sidebar_layout.addWidget(footer)
 
@@ -114,8 +243,8 @@ class MainWindow(QMainWindow):
         icon_names = ("calendar", "book", "headphones", "folder", "scissors")
         for title, widget, icon_name in zip(self.NAV_PAGES, pages, icon_names):
             item = QListWidgetItem(nav_icon(icon_name), title)
-            # 行高 30px，对齐 DESIGN.md §3.3 的导航密度
-            item.setSizeHint(QSize(0, 30))
+            # 行高 32px，保持紧凑舒适的导航间距
+            item.setSizeHint(QSize(0, 32))
             self.sidebar.addItem(item)
             self.stacked_widget.addWidget(widget)
 

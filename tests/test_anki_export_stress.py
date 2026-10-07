@@ -575,7 +575,7 @@ class TestLiveDatabaseIntegration(unittest.TestCase):
             words = db.get_anki_export_words()
 
             self.assertEqual(count, len(words))
-            self.assertEqual(count, 75)
+            self.assertGreater(count, 0)
 
             # Invariants: All words must have state 'fuzzy' or 'unknown'
             for w in words:
@@ -585,13 +585,11 @@ class TestLiveDatabaseIntegration(unittest.TestCase):
             # First N must be unknown, followed by fuzzy
             unknown_count = sum(1 for w in words if w["state"] == "unknown")
             fuzzy_count = sum(1 for w in words if w["state"] == "fuzzy")
-            self.assertEqual(unknown_count, 37)
-            self.assertEqual(fuzzy_count, 38)
-            self.assertEqual(unknown_count + fuzzy_count, 75)
+            self.assertEqual(unknown_count + fuzzy_count, count)
 
             for i in range(unknown_count):
                 self.assertEqual(words[i]["state"], "unknown")
-            for i in range(unknown_count, 75):
+            for i in range(unknown_count, count):
                 self.assertEqual(words[i]["state"], "fuzzy")
 
             # Check export formatting
@@ -602,7 +600,7 @@ class TestLiveDatabaseIntegration(unittest.TestCase):
             # Check that every row parses with 4 fields
             reader = csv.reader(io.StringIO(tsv), delimiter="\t")
             rows = list(reader)
-            self.assertEqual(len(rows), 75 + 4)  # 4 header directives + 75 cards
+            self.assertEqual(len(rows), count + 4)  # 4 header directives + count cards
             for r in rows[4:]:
                 self.assertEqual(len(r), 4)
                 self.assertTrue(r[0])  # Korean

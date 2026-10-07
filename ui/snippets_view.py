@@ -40,6 +40,7 @@ from PySide6.QtWidgets import (
     QFrame,
     QGridLayout,
     QHBoxLayout,
+    QInputDialog,
     QLabel,
     QLineEdit,
     QListWidget,
@@ -57,6 +58,7 @@ from PySide6.QtWidgets import (
 from core.config import SNIPPETS_DIR, SUBJECT_FOLDERS, normalize_path
 from core.snippets import (
     COLLECTED_SOURCE,
+    IMAGE_EXTS,
     collect_records,
     copy_image_into,
     pasted_file_name,
@@ -206,6 +208,8 @@ class SnippetsView(QWidget):
         layout.addWidget(self.banner)
 
         splitter = QSplitter(Qt.Horizontal)
+        splitter.setObjectName("snippetsSplitter")
+        splitter.setChildrenCollapsible(False)
         splitter.addWidget(self._build_list_area())
         splitter.addWidget(self._build_detail_area())
         splitter.setSizes([520, 560])
@@ -280,6 +284,8 @@ class SnippetsView(QWidget):
 
     def _build_detail_area(self):
         split = QSplitter(Qt.Vertical)
+        split.setObjectName("snippetsDetailSplitter")
+        split.setChildrenCollapsible(False)
 
         # ---- 上：预览 ----
         self.preview_scroll = QScrollArea()
@@ -324,9 +330,10 @@ class SnippetsView(QWidget):
         box.addSpacing(4)
         box.addWidget(heading)
         self.title_input = QLineEdit()
-        self.title_input.setPlaceholderText("给这张图起个名字（默认用文件名）")
+        self.title_input.setPlaceholderText("给这张图起个名字（修改后重命名文件）")
         self.title_input.textEdited.connect(self._on_title_edited)
         self.title_input.editingFinished.connect(self._flush_title)
+        self.title_input.returnPressed.connect(self.title_input.clearFocus)
         box.addWidget(self.title_input)
 
         note_row = QHBoxLayout()
@@ -715,7 +722,8 @@ class SnippetsView(QWidget):
         self.lbl_detail_path.setText(os_path)
 
         self.title_input.setEnabled(True)
-        self.title_input.setText(row["title"])
+        orig_stem = os.path.splitext(os.path.basename(os_path))[0]
+        self.title_input.setText(row["title"] or orig_stem)
         self.note_edit.setEnabled(True)
         self.note_edit.blockSignals(True)
         self.note_edit.setPlainText(row["note"])
@@ -872,10 +880,121 @@ class SnippetsView(QWidget):
         row = self._row_for(path)
         if row is None:
             return
-        title = self.title_input.text().strip() if path == self._selected else row["title"]
-        self.database.rename_snippet(path, title)
-        row["title"] = title
+        title = self.title_input.text().strip() if path == self._selected else (row.get("title") or "")
+        self._rename_snippet_to(path, title)
+
+    def _rename_snippet_to(self, old_path, new_text):
+        """修改碎片标题并真实重命名磁盘文件。"""
+        row = self._row_for(old_path)
+        if row is None:
+            return
+
+        new_text = (new_text or "").strip()
+        orig_dir = os.path.dirname(old_path)
+        orig_file = os.path.basename(old_path)
+        orig_stem, orig_ext = os.path.splitext(orig_file)
+
+        # 输入为空时恢复为原显示名
+        if not new_text:
+            if old_path == self._selected:
+                self.title_input.setText(row.get("title") or orig_stem)
+            return
+
+        input_stem, input_ext = os.path.splitext(new_text)
+        if input_ext.lower() == orig_ext.lower():
+            clean_title = input_stem.strip()
+        else:
+            clean_title = new_text
+
+        if not clean_title:
+            clean_title = orig_stem
+
+        target_name = f"{clean_title}{orig_ext}"
+
+        # 检查 Windows 非法文件名字符
+        invalid_chars = set('<>:"/\\|?*')
+        if any(ch in target_name for ch in invalid_chars):
+            show_toast(self.window(), '文件名不能包含 \\ / : * ? " < > | 等特殊字符', "warning")
+            if old_path == self._selected:
+                self.title_input.setText(row.get("title") or orig_stem)
+            return
+
+        new_path = normalize_path(os.path.join(orig_dir, target_name))
+        old_norm = normalize_path(old_path)
+
+        # 文件名未变
+        if new_path.lower() == old_norm.lower() and target_name == orig_file:
+            if row.get("title") != clean_title:
+                self.database.rename_snippet(old_path, clean_title)
+                row["title"] = clean_title
+                self.lbl_detail_name.setText(self._display_title(row))
+                item = self._items.get(old_path)
+                if item is not None:
+                    item.setText(self._item_text(row))
+                    item.setToolTip(self._tooltip(row))
+            return
+
+        # 原文件检查
+        if not os.path.exists(old_path):
+            show_toast(self.window(), "原文件不存在，无法重命名", "warning")
+            if old_path == self._selected:
+                self.title_input.setText(row.get("title") or orig_stem)
+            return
+
+        # 目标重名冲突
+        if new_path.lower() != old_norm.lower() and os.path.exists(new_path):
+            show_toast(self.window(), f"目标文件夹已存在同名文件：{target_name}", "warning")
+            if old_path == self._selected:
+                self.title_input.setText(row.get("title") or orig_stem)
+            return
+
+        # 执行文件重命名
+        try:
+            os.rename(old_path, new_path)
+        except OSError as e:
+            show_toast(self.window(), f"重命名文件失败：{e}", "danger")
+            if old_path == self._selected:
+                self.title_input.setText(row.get("title") or orig_stem)
+            return
+
+        # 更新数据库
+        self.database.rename_snippet_file(old_path, new_path, clean_title)
+
+        # 更新内存数据与视图状态
+        row["path"] = new_path
+        row["title"] = clean_title
+
+        if self._selected == old_path:
+            self._selected = new_path
+        if self._pending_note_path == old_path:
+            self._pending_note_path = new_path
+        if self._pending_title_path == old_path:
+            self._pending_title_path = None
+        if self._preview_source == old_path:
+            self._preview_source = new_path
+
+        if old_path in self._iconized:
+            self._iconized.remove(old_path)
+            self._iconized.add(new_path)
+        if old_path in self._failed:
+            self._failed.remove(old_path)
+            self._failed.add(new_path)
+
+        if old_path in self._items:
+            item = self._items.pop(old_path)
+            item.setData(Qt.UserRole, new_path)
+            item.setText(self._item_text(row))
+            item.setToolTip(self._tooltip(row))
+            self._items[new_path] = item
+
+        # 更新右侧详情面板
         self.lbl_detail_name.setText(self._display_title(row))
+        self.lbl_detail_path.setText(new_path)
+        self.lbl_detail_path.setToolTip(new_path)
+        if old_path == self._selected or new_path == self._selected:
+            self.title_input.setText(clean_title)
+
+        show_toast(self.window(), f"已重命名文件为 {target_name}", "success")
 
     def _on_note_edited(self):
         if self._selected is None:
@@ -941,6 +1060,12 @@ class SnippetsView(QWidget):
             self.paste_image()
         else:
             super().keyPressEvent(event)
+
+    def mousePressEvent(self, event):
+        focused = QApplication.focusWidget()
+        if isinstance(focused, (QLineEdit, QTextEdit)):
+            focused.clearFocus()
+        super().mousePressEvent(event)
 
     def paste_image(self):
         image = QApplication.clipboard().image()
@@ -1066,6 +1191,8 @@ class SnippetsView(QWidget):
         action.triggered.connect(lambda: self._open_externally(path))
         action = menu.addAction(icon("folder-open"), "在文件夹中显示")
         action.triggered.connect(lambda: reveal_in_folder(path))
+        action = menu.addAction(icon("edit"), "重命名文件")
+        action.triggered.connect(lambda: self._prompt_rename_snippet(path))
         action = menu.addAction(icon("clipboard"), "复制路径")
         action.triggered.connect(lambda: QApplication.clipboard().setText(path))
         row = self._row_for(path)
@@ -1073,6 +1200,18 @@ class SnippetsView(QWidget):
             action = menu.addAction(icon("folder"), "在资料库中定位")
             action.triggered.connect(lambda: self.reveal_in_vault.emit(path))
         menu.exec(self.list_widget.viewport().mapToGlobal(position))
+
+    def _prompt_rename_snippet(self, path):
+        row = self._row_for(path)
+        if row is None:
+            return
+        orig_stem, _ = os.path.splitext(os.path.basename(path))
+        current = row.get("title") or orig_stem
+        new_name, ok = QInputDialog.getText(
+            self, "重命名碎片文件", "新文件名：", text=current
+        )
+        if ok and new_name.strip():
+            self._rename_snippet_to(path, new_name.strip())
 
     def _open_externally(self, path):
         if not path or not os.path.exists(path):

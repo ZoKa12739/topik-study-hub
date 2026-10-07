@@ -2025,6 +2025,41 @@ class StudyDatabase:
         )
         self.connection.commit()
 
+    def rename_snippet_file(self, old_path, new_path, new_title):
+        """重命名碎片文件：同步更新 snippets 及其标签、关联资料库记录的 path 与 title。"""
+        old_p = normalize_path(old_path)
+        new_p = normalize_path(new_path)
+        title = (new_title or "").strip()
+        new_name = os.path.basename(new_path)
+
+        cursor = self.connection.cursor()
+        cursor.execute("DELETE FROM snippets WHERE path = ? AND path != ?", (new_p, old_p))
+        cursor.execute(
+            "UPDATE snippets SET path = ?, title = ? WHERE path = ?",
+            (new_p, title, old_p),
+        )
+        cursor.execute(
+            "UPDATE snippet_tags SET path = ? WHERE path = ?",
+            (new_p, old_p),
+        )
+        cursor.execute(
+            "UPDATE materials SET path = ?, name = ? WHERE path = ?",
+            (new_p, new_name, old_p),
+        )
+        cursor.execute(
+            "UPDATE material_tags SET path = ? WHERE path = ?",
+            (new_p, old_p),
+        )
+        cursor.execute(
+            "UPDATE material_usage SET path = ? WHERE path = ?",
+            (new_p, old_p),
+        )
+        cursor.execute(
+            "UPDATE reading_progress SET path = ? WHERE path = ?",
+            (new_p, old_p),
+        )
+        self.connection.commit()
+
     def save_snippet_note(self, path, note):
         self.connection.execute(
             "UPDATE snippets SET note = ? WHERE path = ?", (note or "", normalize_path(path))

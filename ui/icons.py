@@ -159,6 +159,8 @@ def icon(name, color=DEFAULT_COLOR, size=16, selected_color=None) -> QIcon:
         for pm in _render(name, selected_color, size):
             result.addPixmap(pm, QIcon.Mode.Selected, QIcon.State.Off)
             result.addPixmap(pm, QIcon.Mode.Active, QIcon.State.Off)
+            result.addPixmap(pm, QIcon.Mode.Normal, QIcon.State.On)
+            result.addPixmap(pm, QIcon.Mode.Active, QIcon.State.On)
 
     _cache[key] = result
     return result

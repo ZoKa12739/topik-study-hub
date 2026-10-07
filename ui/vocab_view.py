@@ -36,9 +36,10 @@
 """
 
 import os
+import re
 from pathlib import Path
 
-from PySide6.QtCore import QTimer, Qt
+from PySide6.QtCore import QEvent, QTimer, Qt
 from PySide6.QtGui import QColor, QFont, QKeySequence, QShortcut
 from PySide6.QtWidgets import (
     QApplication,
@@ -93,6 +94,17 @@ def state_color(state):
     return _STATE_COLORS.get(state or "", _STATE_COLORS[""])
 
 
+def _extract_pos_and_meaning(raw_meaning):
+    """提取词性/主题（如 [名]、[动]、[登山]）与纯净释义。"""
+    raw = (raw_meaning or "").strip()
+    m = re.match(r"^[\[\(【]([^\]\)】]+)[\]\)】]\s*(.*)$", raw)
+    if m:
+        pos_tag = m.group(1).strip()
+        clean_meaning = m.group(2).strip()
+        return pos_tag, clean_meaning or raw
+    return "", raw
+
+
 class VocabView(QWidget):
     """P1 智能单词仓。"""
 
@@ -133,6 +145,54 @@ class VocabView(QWidget):
         self.init_ui()
         self.refresh_lists()
         self.reload_browse()
+
+        self._in_event_filter = False
+        app = QApplication.instance()
+        if app is not None:
+            app.installEventFilter(self)
+            self.destroyed.connect(self._remove_app_event_filter)
+
+    def _remove_app_event_filter(self, *args):
+        app = QApplication.instance()
+        if app is not None:
+            try:
+                app.removeEventFilter(self)
+            except Exception:
+                pass
+
+    def closeEvent(self, event):
+        self._remove_app_event_filter()
+        super().closeEvent(event)
+
+    def eventFilter(self, watched, event):
+        if getattr(self, "_in_event_filter", False):
+            return super().eventFilter(watched, event)
+        self._in_event_filter = True
+        try:
+            if event is not None and event.type() == QEvent.Type.MouseButtonPress:
+                if self.isVisible():
+                    # 点击笔记框外部区域时取消聚焦，清除焦点边框与输入光标
+                    for editor in (getattr(self, "txt_notes", None), getattr(self, "txt_drill_notes", None)):
+                        if editor is not None and editor.hasFocus():
+                            if watched not in (editor, getattr(editor, "viewport", lambda: None)()):
+                                editor.clearFocus()
+
+                    # 点击文本标签外部区域时清除文本选区和可能存在的光标
+                    for lbl in (
+                        getattr(self, "lbl_detail_kr", None),
+                        getattr(self, "lbl_detail_cn", None),
+                        getattr(self, "lbl_drill_kr", None),
+                        getattr(self, "lbl_drill_cn", None),
+                    ):
+                        if lbl is not None and watched is not lbl:
+                            if hasattr(lbl, "hasSelectedText") and lbl.hasSelectedText():
+                                lbl.setSelection(0, 0)
+                            lbl.clearFocus()
+        except Exception:
+            pass
+        finally:
+            self._in_event_filter = False
+        return super().eventFilter(watched, event)
 
     # ==================================================================
     # 布局
@@ -236,6 +296,7 @@ class VocabView(QWidget):
 
         splitter = QSplitter(Qt.Horizontal)
         splitter.setObjectName("vocabSplitter")
+        splitter.setChildrenCollapsible(False)
 
         self.table = QTableWidget(0, 4)
         self.table.setSelectionBehavior(QTableWidget.SelectRows)
@@ -243,6 +304,7 @@ class VocabView(QWidget):
         self.table.setEditTriggers(QTableWidget.NoEditTriggers)
         self.table.setShowGrid(False)
         self.table.verticalHeader().setVisible(False)
+        self.table.horizontalHeader().setHighlightSections(False)
         # 样式由全局主题提供（QTableWidget / QHeaderView），见 ui/theme.py
         self.table.itemSelectionChanged.connect(self.show_details)
         # 表格不是文本控件，没有内置复制——而这一页最常见的动作就是"查到一个词、
@@ -341,23 +403,44 @@ class VocabView(QWidget):
     # ---------------------------------------------------------------- 过词
 
     def _build_pass_page(self):
-        page = QFrame()
-        page.setObjectName("surface")
-        box = QVBoxLayout(page)
-        box.setContentsMargins(32, 22, 32, 22)
-        box.setSpacing(10)
+        page = QWidget()
+        page.setFocusPolicy(Qt.ClickFocus)
+        page_layout = QVBoxLayout(page)
+        page_layout.setContentsMargins(0, 8, 0, 8)
+        page_layout.setAlignment(Qt.AlignCenter)
 
+        card = QFrame()
+        card.setObjectName("vocabCard")
+        card.setFocusPolicy(Qt.ClickFocus)
+        card.setMinimumWidth(640)
+        card.setMaximumWidth(760)
+        card.setMinimumHeight(440)
+
+        box = QVBoxLayout(card)
+        box.setContentsMargins(28, 22, 28, 22)
+        box.setSpacing(12)
+
+        # 顶部极淡周边信息行：左侧词表名与序号，右侧过词进度
         head = QHBoxLayout()
-        self.lbl_pass_progress = QLabel("")
-        self.lbl_pass_progress.setObjectName("muted")
-        head.addWidget(self.lbl_pass_progress)
+        self.lbl_pass_meta = QLabel("")
+        self.lbl_pass_meta.setObjectName("vocabCardMeta")
+        head.addWidget(self.lbl_pass_meta)
         head.addStretch()
-        hint = QLabel("1 认识 · 2 模糊 · 3 不认识 · Space 揭示释义 · Ctrl+Z 回退")
-        hint.setObjectName("faint")
-        head.addWidget(hint)
+        self.lbl_pass_progress = QLabel("")
+        self.lbl_pass_progress.setObjectName("vocabCardProgress")
+        head.addWidget(self.lbl_pass_progress)
         box.addLayout(head)
 
-        box.addStretch()
+        box.addStretch(1)
+
+        # 核心区域：词性/分类胶囊（周边辅助）
+        pos_row = QHBoxLayout()
+        pos_row.setAlignment(Qt.AlignCenter)
+        self.lbl_pass_pos = QLabel("")
+        self.lbl_pass_pos.setObjectName("vocabCardPos")
+        self.lbl_pass_pos.setVisible(False)
+        pos_row.addWidget(self.lbl_pass_pos)
+        box.addLayout(pos_row)
 
         self.lbl_pass_seq = QLabel("")
         self.lbl_pass_seq.setObjectName("quizSeq")
@@ -376,16 +459,39 @@ class VocabView(QWidget):
         self.lbl_pass_cn.setWordWrap(True)
         box.addWidget(make_copyable(self.lbl_pass_cn))
 
-        box.addStretch()
+        # 例句 / 联想笔记周边槽（低对比度浅底微卡）
+        self.box_pass_note = QFrame()
+        self.box_pass_note.setObjectName("vocabCardNoteBox")
+        note_layout = QVBoxLayout(self.box_pass_note)
+        note_layout.setContentsMargins(12, 8, 12, 8)
+        self.lbl_pass_note = QLabel("")
+        self.lbl_pass_note.setObjectName("vocabCardNoteText")
+        self.lbl_pass_note.setWordWrap(True)
+        self.lbl_pass_note.setAlignment(Qt.AlignCenter)
+        note_layout.addWidget(self.lbl_pass_note)
+        self.box_pass_note.setVisible(False)
+        box.addWidget(self.box_pass_note)
 
+        box.addStretch(1)
+
+        # 操作按钮区
         actions = QHBoxLayout()
-        actions.setSpacing(12)
+        actions.setSpacing(10)
         actions.addStretch()
+
+        self.btn_pass_undo = QPushButton("↩ 回退")
+        self.btn_pass_undo.setObjectName("buttonOutline")
+        self.btn_pass_undo.setCursor(Qt.PointingHandCursor)
+        self.btn_pass_undo.setFocusPolicy(Qt.NoFocus)
+        self.btn_pass_undo.setToolTip("回退上一个词 (Ctrl+Z)")
+        self.btn_pass_undo.clicked.connect(self._undo_pass)
+        self.btn_pass_undo.setEnabled(False)
+        actions.addWidget(self.btn_pass_undo)
+
         self._judge_buttons = {}
         for key, label in (("known", "1　认识"), ("fuzzy", "2　模糊"), ("unknown", "3　不认识")):
             button = QPushButton(label)
             button.setObjectName("judgeButton")
-            # NoFocus：按钮一旦拿到焦点，Space 就变成"点按钮"而不是"揭示释义"
             button.setFocusPolicy(Qt.NoFocus)
             button.setCursor(Qt.PointingHandCursor)
             button.clicked.connect(lambda _checked, s=key: self._judge(s))
@@ -393,35 +499,62 @@ class VocabView(QWidget):
             self._judge_buttons[key] = button
         actions.addStretch()
         box.addLayout(actions)
+
+        # 底部淡灰快捷键弱指引
+        self.lbl_pass_hint = QLabel("1 认识 · 2 模糊 · 3 不认识 · Space 揭示释义 · Ctrl+Z 回退")
+        self.lbl_pass_hint.setObjectName("vocabCardHint")
+        self.lbl_pass_hint.setAlignment(Qt.AlignCenter)
+        box.addWidget(self.lbl_pass_hint)
+
+        page_layout.addWidget(card)
         return page
 
     # ---------------------------------------------------------------- 专攻
 
     def _build_drill_page(self):
         page = QWidget()
+        page.setFocusPolicy(Qt.ClickFocus)
         outer = QVBoxLayout(page)
-        outer.setContentsMargins(0, 0, 0, 0)
+        outer.setContentsMargins(0, 8, 0, 8)
+        outer.setAlignment(Qt.AlignCenter)
 
         self.drill_stack = QStackedWidget()
         outer.addWidget(self.drill_stack)
 
         card = QFrame()
-        card.setObjectName("surface")
+        card.setObjectName("vocabCard")
+        card.setFocusPolicy(Qt.ClickFocus)
+        card.setMinimumWidth(640)
+        card.setMaximumWidth(760)
+        card.setMinimumHeight(440)
         box = QVBoxLayout(card)
-        box.setContentsMargins(32, 22, 32, 22)
+        box.setContentsMargins(28, 22, 28, 22)
         box.setSpacing(10)
 
+        # 顶部极淡周边信息行：左侧专攻进度，右侧保存提示与状态
         head = QHBoxLayout()
-        self.lbl_drill_progress = QLabel("")
-        self.lbl_drill_progress.setObjectName("muted")
-        head.addWidget(self.lbl_drill_progress)
+        self.lbl_drill_meta = QLabel("")
+        self.lbl_drill_meta.setObjectName("vocabCardMeta")
+        head.addWidget(self.lbl_drill_meta)
         head.addStretch()
+        self.lbl_drill_progress = QLabel("")
+        self.lbl_drill_progress.setObjectName("vocabCardProgress")
+        head.addWidget(self.lbl_drill_progress)
         self.lbl_drill_saved = QLabel("")
         self.lbl_drill_saved.setObjectName("saveHint")
         head.addWidget(self.lbl_drill_saved)
         box.addLayout(head)
 
-        box.addStretch()
+        box.addStretch(1)
+
+        # 核心区域：词性/分类胶囊（周边辅助）
+        pos_row = QHBoxLayout()
+        pos_row.setAlignment(Qt.AlignCenter)
+        self.lbl_drill_pos = QLabel("")
+        self.lbl_drill_pos.setObjectName("vocabCardPos")
+        self.lbl_drill_pos.setVisible(False)
+        pos_row.addWidget(self.lbl_drill_pos)
+        box.addLayout(pos_row)
 
         self.lbl_drill_seq = QLabel("")
         self.lbl_drill_seq.setObjectName("quizSeq")
@@ -434,36 +567,70 @@ class VocabView(QWidget):
         self.lbl_drill_kr.setWordWrap(True)
         box.addWidget(make_copyable(self.lbl_drill_kr))
 
-        # 专攻是学习不是测试，释义默认展开（流程 C 第 3 条）——与过词相反
         self.lbl_drill_cn = QLabel("")
         self.lbl_drill_cn.setObjectName("quizMeaning")
         self.lbl_drill_cn.setAlignment(Qt.AlignCenter)
         self.lbl_drill_cn.setWordWrap(True)
         box.addWidget(make_copyable(self.lbl_drill_cn))
 
+        # 专攻笔记输入区
+        note_box = QFrame()
+        note_box.setObjectName("vocabDrillNoteBox")
+        note_vbox = QVBoxLayout(note_box)
+        note_vbox.setContentsMargins(10, 8, 10, 8)
+        note_vbox.setSpacing(4)
+        note_header = QLabel("个人笔记 / 记忆法（停止输入自动保存）")
+        note_header.setObjectName("vocabCardNoteHeader")
+        note_vbox.addWidget(note_header)
+
         self.txt_drill_notes = QTextEdit()
-        self.txt_drill_notes.setPlaceholderText("写下联想记忆——这一遍的目的就是让下次不用再攻它")
-        self.txt_drill_notes.setMaximumHeight(120)
+        self.txt_drill_notes.setPlaceholderText("写下联想记忆、易混词辨析或例句…")
+        self.txt_drill_notes.setMaximumHeight(85)
         self.txt_drill_notes.textChanged.connect(
             lambda: self._on_note_edited(self.txt_drill_notes, self.lbl_drill_saved)
         )
-        box.addWidget(self.txt_drill_notes)
+        note_vbox.addWidget(self.txt_drill_notes)
+        box.addWidget(note_box)
 
-        box.addStretch()
+        box.addStretch(1)
 
+        # 操作按钮区：加入回退选项
         actions = QHBoxLayout()
-        actions.setSpacing(12)
+        actions.setSpacing(10)
         actions.addStretch()
+
+        self.btn_drill_undo = QPushButton("↩ 回退")
+        self.btn_drill_undo.setObjectName("buttonOutline")
+        self.btn_drill_undo.setCursor(Qt.PointingHandCursor)
+        self.btn_drill_undo.setFocusPolicy(Qt.NoFocus)
+        self.btn_drill_undo.setToolTip("回退上一个专攻的词 (Ctrl+Z)")
+        self.btn_drill_undo.clicked.connect(self._undo_drill)
+        self.btn_drill_undo.setEnabled(False)
+        actions.addWidget(self.btn_drill_undo)
+
         for label, known in (("1　认识了", True), ("2　还是不会", False)):
             button = QPushButton(label)
             button.setObjectName("judgeButton")
+            button.setFocusPolicy(Qt.NoFocus)
             button.setCursor(Qt.PointingHandCursor)
             button.clicked.connect(lambda _checked, k=known: self._drill_judge(k))
             actions.addWidget(button)
         actions.addStretch()
         box.addLayout(actions)
 
-        self.drill_stack.addWidget(card)   # 0
+        # 底部淡灰快捷键弱指引
+        self.lbl_drill_hint = QLabel("1 认识了 · 2 还是不会 · Ctrl+Z 回退上一个")
+        self.lbl_drill_hint.setObjectName("vocabCardHint")
+        self.lbl_drill_hint.setAlignment(Qt.AlignCenter)
+        box.addWidget(self.lbl_drill_hint)
+
+        card_wrapper = QWidget()
+        card_w_layout = QVBoxLayout(card_wrapper)
+        card_w_layout.setContentsMargins(0, 0, 0, 0)
+        card_w_layout.setAlignment(Qt.AlignCenter)
+        card_w_layout.addWidget(card)
+
+        self.drill_stack.addWidget(card_wrapper)   # 0
 
         self.empty_drill = EmptyState("", "")
         self.empty_drill.action_clicked.connect(self._on_summary_action)
@@ -475,35 +642,32 @@ class VocabView(QWidget):
     # ==================================================================
 
     def _setup_shortcuts(self):
-        # WidgetWithChildrenShortcut：只有本页（或其子控件）持有焦点时才生效，
-        # 所以切到别的页面时这些键不会误触发。
+        # WindowShortcut：只要窗口在前台且当前处于过词/专攻，无需精准聚焦特定文本即可生效
         self._digit_shortcuts = []
         for key, state in _JUDGE_KEYS:
             shortcut = QShortcut(QKeySequence(key), self)
-            shortcut.setContext(Qt.WidgetWithChildrenShortcut)
+            shortcut.setContext(Qt.WindowShortcut)
             shortcut.activated.connect(lambda s=state: self._judge(s))
             self._digit_shortcuts.append(shortcut)
 
         self._space_shortcut = QShortcut(QKeySequence(Qt.Key_Space), self)
-        self._space_shortcut.setContext(Qt.WidgetWithChildrenShortcut)
+        self._space_shortcut.setContext(Qt.WindowShortcut)
         self._space_shortcut.activated.connect(self._toggle_reveal)
 
         self._undo_shortcut = QShortcut(QKeySequence.Undo, self)
-        self._undo_shortcut.setContext(Qt.WidgetWithChildrenShortcut)
-        self._undo_shortcut.activated.connect(self._undo_pass)
+        self._undo_shortcut.setContext(Qt.WindowShortcut)
+        self._undo_shortcut.activated.connect(self._handle_undo)
 
-        # 2.6 的全局键里，`Ctrl+F` / `Ctrl+S` 落在有搜索框与笔记编辑区的模块上，
-        # 本页就是第一个（P5 的快捷键表已注明其余随各自模块在第 3~5 期落地）。
+        # 2.6 的全局键里，`Ctrl+F` / `Ctrl+S` 落在有搜索框与笔记编辑区的模块上
         self._find_shortcut = QShortcut(QKeySequence.Find, self)
-        self._find_shortcut.setContext(Qt.WidgetWithChildrenShortcut)
+        self._find_shortcut.setContext(Qt.WindowShortcut)
         self._find_shortcut.activated.connect(self._focus_search)
 
         self._save_shortcut = QShortcut(QKeySequence.Save, self)
-        self._save_shortcut.setContext(Qt.WidgetWithChildrenShortcut)
+        self._save_shortcut.setContext(Qt.WindowShortcut)
         self._save_shortcut.activated.connect(self._save_now)
 
-        # `Ctrl+C` 挂在**表格**上而不是本页：作用域跟着焦点走，搜索框与笔记编辑区
-        # 里的 Ctrl+C 仍然是它们自己的复制，不会被这里抢走。
+        # `Ctrl+C` 挂在表格上：作用域跟着表格焦点走
         self._copy_shortcut = QShortcut(QKeySequence.Copy, self.table)
         self._copy_shortcut.setContext(Qt.WidgetWithChildrenShortcut)
         self._copy_shortcut.activated.connect(self.copy_current_word)
@@ -511,24 +675,27 @@ class VocabView(QWidget):
         self._sync_shortcuts()
 
     def _sync_shortcuts(self):
-        guessing = self._mode != self.MODE_BROWSE
+        active = self.isVisible() and self._mode != self.MODE_BROWSE
         for shortcut in self._digit_shortcuts:
-            shortcut.setEnabled(guessing)
-        # Space 与 Ctrl+Z 只属于过词：专攻卡里有笔记编辑区，
-        # 那里 Ctrl+Z 必须是文本撤销、Space 必须是打空格。
-        self._space_shortcut.setEnabled(self._mode == self.MODE_PASS)
-        self._undo_shortcut.setEnabled(self._mode == self.MODE_PASS)
+            shortcut.setEnabled(active)
+        self._space_shortcut.setEnabled(active and self._mode == self.MODE_PASS)
+        self._undo_shortcut.setEnabled(active)
 
     def _keyboard_ok(self):
-        """键盘只在过词/专攻生效，且**不得抢走文本输入**。
-
-        少了这道判断，用户在搜索框里输入 "1" 或者写笔记时按 "1"，
-        就会把词判出去——4.2 要求键盘优先，但优先的前提是别抢输入。
-        """
-        if self._mode == self.MODE_BROWSE:
+        """键盘只在过词/专攻生效，且不得抢走文本输入框的输入。"""
+        if not self.isVisible() or self._mode == self.MODE_BROWSE:
             return False
         focus = QApplication.focusWidget()
         return not isinstance(focus, (QLineEdit, QTextEdit))
+
+    def _handle_undo(self):
+        """统一处理 Ctrl+Z 回退快捷键：过词与专攻均可回退。"""
+        if not self._keyboard_ok():
+            return
+        if self._mode == self.MODE_PASS:
+            self._undo_pass()
+        elif self._mode == self.MODE_DRILL:
+            self._undo_drill()
 
     def _focus_search(self):
         """`Ctrl+F`：回到浏览模式并聚焦搜索框。"""
@@ -630,8 +797,10 @@ class VocabView(QWidget):
             self.reload_browse()
         elif mode == self.MODE_PASS:
             self._pass_begin()
+            self.setFocus()
         else:
             self._drill_begin()
+            self.setFocus()
 
     def _sync_mode_buttons(self):
         """让三个模式按钮**恒有且仅有一个**选中。
@@ -997,9 +1166,13 @@ class VocabView(QWidget):
 
         row = self._browse_rows[index]
         self._detail = row
-        self.lbl_detail_seq.setText(f"第 {row['seq']} 个")
+        pos_tag, clean_meaning = _extract_pos_and_meaning(row["meaning"])
+        if pos_tag:
+            self.lbl_detail_seq.setText(f"第 {row['seq']} 个 · [{pos_tag}]")
+        else:
+            self.lbl_detail_seq.setText(f"第 {row['seq']} 个")
         self.lbl_detail_kr.setText(row["korean"])
-        self.lbl_detail_cn.setText(row["meaning"] or "")
+        self.lbl_detail_cn.setText(clean_meaning or row["meaning"] or "")
 
         note = self.database.get_word_note(row["korean"])
         # 屏蔽信号：载入笔记不该触发"内容变化 → 自动保存"
@@ -1109,20 +1282,50 @@ class VocabView(QWidget):
         finished = self._pass_index >= len(self._pass_rows)
         self.lbl_pass_seq.setText("")
         self.lbl_pass_kr.setText("这一遍过完了" if finished else "")
+        if hasattr(self, "lbl_pass_pos"):
+            self.lbl_pass_pos.setVisible(False)
+        if hasattr(self, "box_pass_note"):
+            self.box_pass_note.setVisible(False)
         for button in self._judge_buttons.values():
             button.setEnabled(not finished)
+        if hasattr(self, "btn_pass_undo"):
+            self.btn_pass_undo.setEnabled(bool(self._undo_stack))
 
         if finished:
+            if hasattr(self, "lbl_pass_meta"):
+                self.lbl_pass_meta.setText(f"《{self.current_list_name()}》 · 全部完成")
             restyle(self.lbl_pass_cn, "quizMeaning")
             self.lbl_pass_cn.setText(
                 "切到「专攻」去攻被标出来的词，或者直接再过一遍。"
             )
         else:
             row = self._pass_rows[self._pass_index]
-            self.lbl_pass_seq.setText(f"第 {row['seq']} 个")
+            if hasattr(self, "lbl_pass_meta"):
+                self.lbl_pass_meta.setText(
+                    f"《{self.current_list_name()}》 · 第 {row['seq']} 词"
+                )
+            pos_tag, clean_meaning = _extract_pos_and_meaning(row["meaning"])
+            if hasattr(self, "lbl_pass_pos"):
+                if pos_tag:
+                    self.lbl_pass_pos.setText(f"[{pos_tag}]")
+                    self.lbl_pass_pos.setVisible(True)
+                else:
+                    self.lbl_pass_pos.setVisible(False)
+
+            self.lbl_pass_seq.setText(f"进度：{self._pass_index + 1} / {len(self._pass_rows)}")
             self.lbl_pass_kr.setText(row["korean"])
             self._revealed = False
             self._render_pass_meaning()
+
+            # 周边弱对比呈现例句与笔记
+            if hasattr(self, "box_pass_note"):
+                note = self.database.get_word_note(row["korean"])
+                note_text = (note["note"] if note else "").strip()
+                if note_text:
+                    self.lbl_pass_note.setText(f"💡 笔记与例句：{note_text}")
+                    self.box_pass_note.setVisible(True)
+                else:
+                    self.box_pass_note.setVisible(False)
 
         self._update_pass_progress()
 
@@ -1131,9 +1334,11 @@ class VocabView(QWidget):
         if self._pass_index >= len(self._pass_rows):
             return
         row = self._pass_rows[self._pass_index]
+        _, clean_meaning = _extract_pos_and_meaning(row["meaning"])
+        meaning_display = clean_meaning or row["meaning"] or "（这份词表没有释义）"
         if self._revealed:
             restyle(self.lbl_pass_cn, "quizMeaning")
-            self.lbl_pass_cn.setText(row["meaning"] or "（这份词表没有释义）")
+            self.lbl_pass_cn.setText(meaning_display)
         else:
             restyle(self.lbl_pass_cn, "faint")
             self.lbl_pass_cn.setText("释义已遮住 · 按 Space 揭示")
@@ -1167,11 +1372,6 @@ class VocabView(QWidget):
         previous_cursor = self.database.pass_word(list_id, row["seq"], korean, state)
         self._undo_stack.append((korean, previous_state, previous_cursor))
 
-        # 活动日志（5.2）：只在**第一次**过这个词时记一个。5.4 的口径是「当日**新增**
-        # 过词的词数」，而"新增"在这里有精确的判据——`previous_state is None` 就是
-        # 「这个词此前没有任何状态」。它同时保证了「今日过词」与同一页上的
-        # 「已过 320 / 1400」变化量一致：后者的分子正好是"状态非空"的词数
-        # （`list_counts`）。来回重过同一个词不该把这个数刷上去。
         if previous_state is None:
             self.database.note_vocab_progress(
                 "vocab_triaged", list_id=list_id, list_name=self.current_list_name()
@@ -1180,20 +1380,16 @@ class VocabView(QWidget):
         row["state"] = state
         self._pass_index += 1
         self._show_pass_current()
+        if hasattr(self, "btn_pass_undo"):
+            self.btn_pass_undo.setEnabled(bool(self._undo_stack))
 
     def _undo_pass(self):
-        """`Ctrl+Z` 退回上一个词（流程 B 第 7 条）：状态与断点一起还原。
-
-        回退本身也写一条 `word_state_log` 流水——那张表是只追加的历史，
-        改历史比追加一条修正记录更糟。
-        """
-        if not self._keyboard_ok() or not self._undo_stack:
+        """`Ctrl+Z` 退回上一个词（流程 B 第 7 条）：状态与断点一起还原。"""
+        if not self._undo_stack:
             return
         korean, previous_state, previous_cursor = self._undo_stack.pop()
         list_id = self.current_list_id()
         self.database.pass_word(list_id, previous_cursor, korean, previous_state)
-        # 退掉的活动日志计数与退掉的状态是同一件事：这一条只在当初记过时才退，
-        # 否则「已过」减了 1 而「今日过词」不动，同一页上两个数当场打架（5.4）。
         if previous_state is None:
             self.database.note_vocab_progress(
                 "vocab_triaged", list_id=list_id, list_name=self.current_list_name(), delta=-1
@@ -1202,6 +1398,8 @@ class VocabView(QWidget):
         if self._pass_index < len(self._pass_rows):
             self._pass_rows[self._pass_index]["state"] = previous_state or ""
         self._show_pass_current()
+        if hasattr(self, "btn_pass_undo"):
+            self.btn_pass_undo.setEnabled(bool(self._undo_stack))
 
     def _update_pass_progress(self):
         """`已过 320 / 1400 · 已标记 87`。
@@ -1230,22 +1428,36 @@ class VocabView(QWidget):
         self._drill_index = 0
         self._drill_cleared = 0
         self._drill_round_counted = False
+        self._drill_undo_stack = []
         if not self._drill_rows:
             self._show_drill_summary(first_time=True)
             return
         self.drill_stack.setCurrentIndex(0)
         self._show_drill_current()
+        self._sync_drill_undo_button()
 
     def _show_drill_current(self):
         if self._drill_index >= len(self._drill_rows):
             self._finish_drill_round()
             return
         row = self._drill_rows[self._drill_index]
-        self.lbl_drill_seq.setText(
-            f"第 {row['seq']} 个" + (" · 不认识" if row["state"] == "unknown" else " · 模糊")
-        )
+        if hasattr(self, "lbl_drill_meta"):
+            self.lbl_drill_meta.setText(
+                f"《{self.current_list_name()}》 · 待专攻第 {self._drill_index + 1} / {len(self._drill_rows)} 词"
+            )
+
+        pos_tag, clean_meaning = _extract_pos_and_meaning(row["meaning"])
+        if hasattr(self, "lbl_drill_pos"):
+            if pos_tag:
+                self.lbl_drill_pos.setText(f"[{pos_tag}]")
+                self.lbl_drill_pos.setVisible(True)
+            else:
+                self.lbl_drill_pos.setVisible(False)
+
+        state_text = "● 不认识" if row["state"] == "unknown" else "● 模糊"
+        self.lbl_drill_seq.setText(f"第 {row['seq']} 个 · {state_text}")
         self.lbl_drill_kr.setText(row["korean"])
-        self.lbl_drill_cn.setText(row["meaning"] or "（这份词表没有释义）")
+        self.lbl_drill_cn.setText(clean_meaning or row["meaning"] or "（这份词表没有释义）")
 
         note = self.database.get_word_note(row["korean"])
         self.txt_drill_notes.blockSignals(True)
@@ -1254,22 +1466,21 @@ class VocabView(QWidget):
         self.txt_drill_notes.setProperty("wordKey", row["korean"])
         self.lbl_drill_saved.setText("")
         self._update_drill_progress()
+        self._sync_drill_undo_button()
 
     def _drill_judge(self, known):
-        """专攻的两个动作。`认识了` 出列；`还是不会` 原样留在待专攻里。
-
-        **不推进过词断点**：第二遍是"攻"，不是重新"过"。在这里改断点会把用户
-        第一遍的进度搅乱（一个词可能出现在断点之前的位置）。
-        """
+        """专攻的两个动作。`认识了` 出列；`还是不会` 原样留在待专攻里。"""
         if self._drill_index >= len(self._drill_rows):
             return
         self._flush_note()
         row = self._drill_rows[self._drill_index]
+        korean = row["korean"]
+        prev_state = row["state"]
+        if not hasattr(self, "_drill_undo_stack"):
+            self._drill_undo_stack = []
+        self._drill_undo_stack.append((self._drill_index, korean, prev_state, known))
         if known:
-            self.database.set_word_state(row["korean"], "known")
-            # 5.4：今日专攻 = 当日**转为 known** 的词数。专攻的队列只收
-            # `fuzzy` / `unknown`，所以"按一下就是一个真实的转移"，不必再判断前置状态；
-            # 专攻也没有撤销键，因此这里只有加、没有减。
+            self.database.set_word_state(korean, "known")
             self.database.note_vocab_progress(
                 "vocab_drilled",
                 list_id=self.current_list_id(),
@@ -1277,15 +1488,44 @@ class VocabView(QWidget):
             )
             row["cleared"] = True
             self._drill_cleared += 1
-        # 「还是不会」不动状态：词自然留在待专攻队列里，下一轮再出现（流程 C 第 5、6 条）
         self._drill_index += 1
         self._show_drill_current()
+        self._sync_drill_undo_button()
+
+    def _undo_drill(self):
+        """回退上一个专攻的词 (Ctrl+Z 或 点击回退按钮)。"""
+        if not getattr(self, "_drill_undo_stack", None):
+            return
+        self._flush_note()
+        idx, korean, prev_state, was_known = self._drill_undo_stack.pop()
+        list_id = self.current_list_id()
+        if was_known:
+            self.database.set_word_state(korean, prev_state)
+            self.database.note_vocab_progress(
+                "vocab_drilled",
+                list_id=list_id,
+                list_name=self.current_list_name(),
+                delta=-1,
+            )
+            self._drill_cleared = max(0, self._drill_cleared - 1)
+            if idx < len(self._drill_rows):
+                self._drill_rows[idx]["cleared"] = False
+        self._drill_index = idx
+        if self.drill_stack.currentIndex() != 0:
+            self.drill_stack.setCurrentIndex(0)
+        self._show_drill_current()
+        self._sync_drill_undo_button()
+
+    def _sync_drill_undo_button(self):
+        if hasattr(self, "btn_drill_undo"):
+            self.btn_drill_undo.setEnabled(bool(getattr(self, "_drill_undo_stack", None)))
 
     def _finish_drill_round(self):
         list_id = self.current_list_id()
         if not self._drill_round_counted:
             self.database.mark_drill_round(list_id)
             self._drill_round_counted = True
+        self._sync_drill_undo_button()
         self._show_drill_summary(first_time=False)
 
     def _show_drill_summary(self, first_time):
@@ -1366,9 +1606,19 @@ class VocabView(QWidget):
         """关窗口前冲刷未落库的笔记（`MainWindow.closeEvent` 调用）。"""
         self._flush_note()
 
+    def showEvent(self, event):
+        super().showEvent(event)
+        self._sync_shortcuts()
+
     def hideEvent(self, event):
         # 切到别的页面也要冲刷：本页不是当前页时，防抖定时器还要再等 1.5 秒
         self._flush_note()
+        for shortcut in getattr(self, "_digit_shortcuts", []):
+            shortcut.setEnabled(False)
+        if hasattr(self, "_space_shortcut"):
+            self._space_shortcut.setEnabled(False)
+        if hasattr(self, "_undo_shortcut"):
+            self._undo_shortcut.setEnabled(False)
         super().hideEvent(event)
 
     # ==================================================================

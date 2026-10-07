@@ -163,7 +163,10 @@ class VaultView(QWidget):
         原实现用"向上三级"当资料根，项目一移动就指向错误目录——实测本机资料已在
         `课程资料/` 之下又迁进一层，而推导结果停在 `课程资料/`。见 PRODUCT_SPEC D10。
         """
-        return self.database.get_material_root()
+        try:
+            return self.database.get_material_root()
+        except Exception:
+            return ""
 
     # ==================================================================
     # 布局
@@ -194,6 +197,7 @@ class VaultView(QWidget):
 
         splitter = QSplitter(Qt.Horizontal)
         splitter.setObjectName("vaultSplitter")
+        splitter.setChildrenCollapsible(False)
         splitter.addWidget(self._build_list_area())
         splitter.addWidget(self._build_detail_panel())
         splitter.setStretchFactor(0, 1)
@@ -503,7 +507,10 @@ class VaultView(QWidget):
         """重读全量索引并重建列表。`keep` 是要保住的选中项 path。"""
         if keep is not None:
             self._selected = keep
-        self._rows = self.database.library_snapshot()
+        try:
+            self._rows = self.database.library_snapshot()
+        except Exception:
+            return
         root = self.root_dir
         self._missing_dirs = (
             [name for name in SUBJECT_FOLDERS if not os.path.isdir(os.path.join(root, name))]

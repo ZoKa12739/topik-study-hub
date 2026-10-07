@@ -54,6 +54,7 @@ AB 点、语速与曲目状态。`MainWindow.closeEvent` 调它，`hideEvent`（
 """
 
 import os
+import re
 import time
 from datetime import datetime
 
@@ -83,9 +84,12 @@ from PySide6.QtWidgets import (
     QListWidgetItem,
     QMenu,
     QPushButton,
+    QSizePolicy,
     QSlider,
     QSplitter,
     QStackedWidget,
+    QStyle,
+    QStyleOptionSlider,
     QTextEdit,
     QVBoxLayout,
     QWidget,
@@ -186,6 +190,31 @@ def preferred_audio_format():
     chosen = QMediaFormat(QMediaFormat.FileFormat.Wave)
     chosen.setAudioCodec(QMediaFormat.AudioCodec.Wave)
     return chosen, ".wav"
+
+
+class ClickableSlider(QSlider):
+    """支持点击直接跳转并继续拖动的进度条滑块。"""
+
+    def __init__(self, orientation=Qt.Orientation.Horizontal, parent=None):
+        super().__init__(orientation, parent)
+        self.setCursor(Qt.PointingHandCursor)
+
+    def mousePressEvent(self, event):
+        if event.button() == Qt.MouseButton.LeftButton:
+            opt = QStyleOptionSlider()
+            self.initStyleOption(opt)
+            handle_rect = self.style().subControlRect(
+                QStyle.ComplexControl.CC_Slider, opt, QStyle.SubControl.SC_SliderHandle, self
+            )
+            handle_len = handle_rect.width() if self.orientation() == Qt.Orientation.Horizontal else handle_rect.height()
+            span = max(1, (self.width() if self.orientation() == Qt.Orientation.Horizontal else self.height()) - handle_len)
+            pos = int(event.position().x() if self.orientation() == Qt.Orientation.Horizontal else event.position().y()) - handle_len // 2
+            val = QStyle.sliderValueFromPosition(
+                self.minimum(), self.maximum(), pos, span, opt.upsideDown
+            )
+            self.setValue(val)
+            self.sliderMoved.emit(val)
+        super().mousePressEvent(event)
 
 
 class PdfPanel(QFrame):
@@ -365,16 +394,25 @@ class FFmpegWorker(QThread):
     def run(self):
         import subprocess
 
+        last_lines = []
         try:
             self._process = subprocess.Popen(
                 ["ffmpeg", *self.args],
+                stdin=subprocess.DEVNULL,
                 stdout=subprocess.PIPE,
                 stderr=subprocess.STDOUT,
                 universal_newlines=True,
+                encoding="utf-8",
+                errors="replace",
                 creationflags=subprocess.CREATE_NO_WINDOW if os.name == "nt" else 0,
             )
             for line in self._process.stdout:
-                self.progress.emit(line.strip())
+                line_str = line.strip()
+                if line_str:
+                    last_lines.append(line_str)
+                    if len(last_lines) > 8:
+                        last_lines.pop(0)
+                self.progress.emit(line_str)
             self._process.wait()
         except FileNotFoundError:
             self.finished.emit(False, "未检测到 ffmpeg")
@@ -382,11 +420,22 @@ class FFmpegWorker(QThread):
         except OSError as error:
             self.finished.emit(False, str(error))
             return
+        except Exception as error:
+            self.finished.emit(False, str(error))
+            return
 
         if self._cancelled:
             return   # 关窗口时被取消：不发信号，接收方可能已经拆了
         ok = self._process.returncode == 0 and os.path.isfile(self.output)
-        self.finished.emit(ok, self.output if ok else "FFmpeg 执行失败")
+        if not ok and os.path.isfile(self.output):
+            try:
+                os.remove(self.output)
+            except OSError:
+                pass
+        err_msg = "FFmpeg 执行失败"
+        if not ok and last_lines:
+            err_msg += f": {last_lines[-1]}"
+        self.finished.emit(ok, self.output if ok else err_msg)
 
 
 class ShadowingView(QWidget):
@@ -409,7 +458,6 @@ class ShadowingView(QWidget):
         self._pending_position = None         # 载入时就等着落下的定位
         self._rebuilding = False
         self._banner_action = None
-        self._worker = None
         self._closed = False
         self._collapsed = False
         self.pdf_zoom = None                  # None = 适合宽度
@@ -503,10 +551,10 @@ class ShadowingView(QWidget):
         要求告知用户的导入代价。
         """
         bar = QFrame()
-        bar.setObjectName("surface")
+        bar.setObjectName("shadowingToolbar")
         box = QVBoxLayout(bar)
-        box.setContentsMargins(10, 8, 10, 8)
-        box.setSpacing(6)
+        box.setContentsMargins(0, 2, 0, 4)
+        box.setSpacing(4)
 
         row = QHBoxLayout()
         row.setSpacing(8)
@@ -527,11 +575,11 @@ class ShadowingView(QWidget):
         self.btn_import_audio.setToolTip("多选或拖拽音频文件；会复制进工具自己的音频库，源文件不动")
         row.addWidget(self.btn_import_audio)
 
-        self.btn_convert = QPushButton("转换视频")
-        self.btn_convert.setObjectName("iconButton")
-        self.btn_convert.setIcon(icon("film"))
-        self.btn_convert.setToolTip("从 OBS 录制的 MKV / MP4 里提取音轨（需要 ffmpeg）")
-        row.addWidget(self.btn_convert)
+        self.btn_open_recordings = QPushButton("录音文件夹")
+        self.btn_open_recordings.setObjectName("iconButton")
+        self.btn_open_recordings.setIcon(icon("folder-open"))
+        self.btn_open_recordings.setToolTip("打开已保存跟读录音所在的文件夹")
+        row.addWidget(self.btn_open_recordings)
 
         row.addStretch()
 
@@ -541,13 +589,15 @@ class ShadowingView(QWidget):
         self.btn_zoom_out = QPushButton("−")
         self.btn_zoom_in = QPushButton("＋")
         self.btn_zoom_fit = QPushButton("适宽")
-        for button in (self.btn_zoom_out, self.btn_zoom_in, self.btn_zoom_fit):
+        for button in (self.btn_zoom_out, self.btn_zoom_in):
             button.setObjectName("iconButton")
-            button.setFixedWidth(38)
+            button.setFixedWidth(36)
+        self.btn_zoom_fit.setObjectName("iconButton")
+        self.btn_zoom_fit.setFixedWidth(60)
         self.btn_zoom_fit.setToolTip("两份 PDF 都缩放到适合面板宽度")
         self.lbl_zoom = QLabel("适宽")
         self.lbl_zoom.setObjectName("faint")
-        self.lbl_zoom.setFixedWidth(52)
+        self.lbl_zoom.setFixedWidth(56)
         self.lbl_zoom.setAlignment(Qt.AlignCenter)
         row.addWidget(self.btn_zoom_out)
         row.addWidget(self.lbl_zoom)
@@ -566,7 +616,7 @@ class ShadowingView(QWidget):
         """左栏。折叠按钮**在这块面板自己的标题行里**（用户验收要求），折叠后
         面板收缩成一条窄条、按钮留在原处可点——按钮跟着内容一起消失就再也展不开了。"""
         panel = QFrame()
-        panel.setObjectName("surface")
+        panel.setObjectName("shadowingListPanel")
         panel.setMinimumWidth(EXPANDED_MIN_WIDTH)
 
         outer = QVBoxLayout(panel)
@@ -624,22 +674,9 @@ class ShadowingView(QWidget):
         self.track_list.setContextMenuPolicy(Qt.CustomContextMenu)
 
         self.empty_tracks = EmptyState()
-        empty_page = QWidget()
-        empty_box = QVBoxLayout(empty_page)
-        empty_box.setContentsMargins(0, 0, 0, 0)
-        empty_box.addWidget(self.empty_tracks, 1)
-        convert_row = QHBoxLayout()
-        convert_row.addStretch()
-        self.btn_empty_convert = QPushButton("转换视频")
-        self.btn_empty_convert.setObjectName("iconButton")
-        self.btn_empty_convert.setIcon(icon("film"))
-        convert_row.addWidget(self.btn_empty_convert)
-        convert_row.addStretch()
-        empty_box.addLayout(convert_row)
-
         self.list_stack = QStackedWidget()
         self.list_stack.addWidget(self.track_list)   # 0
-        self.list_stack.addWidget(empty_page)        # 1
+        self.list_stack.addWidget(self.empty_tracks) # 1
         box.addWidget(self.list_stack, 1)
 
         foot = QHBoxLayout()
@@ -676,33 +713,48 @@ class ShadowingView(QWidget):
         return page
 
     def _build_player_card(self):
-        """底部：**左边原音、右边录音**（验收意见）。
-
-        比例 6:4 而不是对半：原音那边要放时间轴，进度条短了就没法精准拖拽和设 A-B 点；
-        录音那边只有三个控件，40% 绰绰有余。中间一条 `QFrame.VLine` 是软分隔，
-        比两个卡片并排更安静——它们本来就同属"跟读"这一件事。
-        """
+        """底部：左边原音、右边录音。"""
         card = QFrame()
-        card.setObjectName("surface")
+        card.setObjectName("shadowingPlayerCard")
         outer = QHBoxLayout(card)
-        outer.setContentsMargins(16, 12, 16, 12)
+        outer.setContentsMargins(16, 10, 16, 10)
         outer.setSpacing(14)
 
         left = QWidget()
         box = QVBoxLayout(left)
         box.setContentsMargins(0, 0, 0, 0)
-        box.setSpacing(8)
+        box.setSpacing(6)
 
         head = QHBoxLayout()
         head.setSpacing(8)
+
+        title_box = QVBoxLayout()
+        title_box.setSpacing(2)
         self.lbl_current = QLabel("从左侧选择一个音频开始跟读")
         self.lbl_current.setObjectName("sectionTitle")
-        self.lbl_current.setWordWrap(True)
-        head.addWidget(make_copyable(self.lbl_current), 1)
+        self.lbl_current.setWordWrap(False)
+        self.lbl_current.setSizePolicy(QSizePolicy.Ignored, QSizePolicy.Preferred)
+        title_box.addWidget(make_copyable(self.lbl_current))
+
         self.lbl_track_meta = QLabel("")
         self.lbl_track_meta.setObjectName("muted")
         self.lbl_track_meta.setWordWrap(False)
-        head.addWidget(self.lbl_track_meta)
+        title_box.addWidget(self.lbl_track_meta)
+        head.addLayout(title_box, 1)
+
+        self.combo_speed = QComboBox()
+        self.combo_speed.addItems([text for text, _ in SPEEDS])
+        self.combo_speed.setCurrentText("1.0×")
+        self.combo_speed.setToolTip("播放速度")
+        self.combo_speed.setFixedWidth(72)
+        head.addWidget(self.combo_speed, 0, Qt.AlignVCenter)
+
+        self.combo_loop = QComboBox()
+        self.combo_loop.addItems(LOOP_MODES)
+        self.combo_loop.setToolTip("列表的推进方式：顺序 / 列表循环 / 单曲循环。曲目内的 A-B 循环是另一层")
+        self.combo_loop.setFixedWidth(88)
+        head.addWidget(self.combo_loop, 0, Qt.AlignVCenter)
+
         box.addLayout(head)
 
         timeline = QHBoxLayout()
@@ -711,7 +763,7 @@ class ShadowingView(QWidget):
         self.lbl_current_time.setObjectName("muted")
         self.lbl_total_time = QLabel("00:00")
         self.lbl_total_time.setObjectName("muted")
-        self.slider = QSlider(Qt.Horizontal)
+        self.slider = ClickableSlider(Qt.Horizontal)
         self.slider.setObjectName("timeline")
         timeline.addWidget(self.lbl_current_time)
         timeline.addWidget(self.slider, 1)
@@ -719,35 +771,27 @@ class ShadowingView(QWidget):
         box.addLayout(timeline)
 
         transport = QHBoxLayout()
-        transport.setSpacing(8)
+        transport.setSpacing(6)
         self.btn_prev = QPushButton()
         self.btn_prev.setObjectName("iconButton")
         self.btn_prev.setIcon(icon("skip-back"))
-        self.btn_prev.setFixedWidth(40)
+        self.btn_prev.setFixedSize(32, 28)
         self.btn_prev.setToolTip("上一个音频（Ctrl+←）")
+
         self.btn_play = QPushButton("播放")
         self.btn_play.setObjectName("primaryButton")
         self.btn_play.setIcon(icon("play", "#FFFFFF", 14))
+        self.btn_play.setFixedHeight(28)
+        self.btn_play.setMinimumWidth(68)
+
         self.btn_next = QPushButton()
         self.btn_next.setObjectName("iconButton")
         self.btn_next.setIcon(icon("skip-forward"))
-        self.btn_next.setFixedWidth(40)
+        self.btn_next.setFixedSize(32, 28)
         self.btn_next.setToolTip("下一个音频（Ctrl+→）")
+
         for button in (self.btn_prev, self.btn_play, self.btn_next):
             transport.addWidget(button)
-
-        # 语速与循环**不带文字标签**：它们的取值本身就说明了一切，标签只是挤占宽度
-        # （验收意见：这一行要能容下全部控件）。含义放 tooltip。
-        self.combo_speed = QComboBox()
-        self.combo_speed.addItems([text for text, _ in SPEEDS])
-        self.combo_speed.setCurrentText("1.0×")
-        self.combo_speed.setToolTip("播放速度")
-        transport.addWidget(self.combo_speed)
-
-        self.combo_loop = QComboBox()
-        self.combo_loop.addItems(LOOP_MODES)
-        self.combo_loop.setToolTip("列表的推进方式：顺序 / 列表循环 / 单曲循环。曲目内的 A-B 循环是另一层")
-        transport.addWidget(self.combo_loop)
 
         transport.addStretch()
 
@@ -755,9 +799,17 @@ class ShadowingView(QWidget):
         self.btn_b = QPushButton("设 B 点")
         self.btn_clear_ab = QPushButton("清除")
         self.btn_clear_ab.setToolTip("清除 A-B 点")
-        for button in (self.btn_a, self.btn_b, self.btn_clear_ab):
+
+        for button in (self.btn_a, self.btn_b):
             button.setObjectName("iconButton")
+            button.setFixedHeight(28)
+            button.setMinimumWidth(66)
             transport.addWidget(button)
+
+        self.btn_clear_ab.setObjectName("iconButton")
+        self.btn_clear_ab.setFixedHeight(28)
+        self.btn_clear_ab.setMinimumWidth(46)
+        transport.addWidget(self.btn_clear_ab)
 
         self._transport_controls = [
             self.btn_prev, self.btn_next, self.btn_play, self.combo_speed, self.combo_loop,
@@ -773,21 +825,16 @@ class ShadowingView(QWidget):
         divider.setFrameShadow(QFrame.Plain)
         outer.addWidget(divider)
 
-        # 录音区**按自身宽度就位**（不占固定比例）：它只有两个控件，
-        # 强行给它 40% 只会让左边的进度条白白短掉一截。
+        # 录音区按自身宽度就位（固定宽度 145px，避免压缩播放控制区）
         outer.addWidget(self._build_recorder_panel())
         return card
 
     def _build_recorder_panel(self):
-        """跟读录音：**一个按钮 + 一个计时**，就这两样。
-
-        刻意不做回放、不做对比、不做波形、不做打分——录下来的文件就在设置里那个目录，
-        想听用任何播放器都能听。这一页多一样东西都是负担。
-        """
+        """跟读录音：一个按钮 + 一个计时。"""
         panel = QWidget()
         box = QVBoxLayout(panel)
         box.setContentsMargins(0, 0, 0, 0)
-        box.setSpacing(6)
+        box.setSpacing(4)
 
         heading = QLabel("跟读录音")
         heading.setObjectName("sectionTitle")
@@ -799,7 +846,8 @@ class ShadowingView(QWidget):
         self.btn_record.setObjectName("recordButton")
         self.btn_record.setCursor(Qt.PointingHandCursor)
         self.btn_record.setFocusPolicy(Qt.NoFocus)
-        self.btn_record.setMinimumWidth(88)
+        self.btn_record.setMinimumWidth(80)
+        self.btn_record.setFixedHeight(28)
         self.btn_record.setToolTip(
             "跟着原音念，录成一条音轨存到设置里指定的位置。带耳机效果最好。"
         )
@@ -817,6 +865,7 @@ class ShadowingView(QWidget):
         box.addWidget(self.lbl_recording)
 
         box.addStretch()
+        panel.setFixedWidth(145)
         return panel
 
     # ==================================================================
@@ -825,8 +874,8 @@ class ShadowingView(QWidget):
 
     def setup_connections(self):
         self.btn_import_audio.clicked.connect(self.import_audio)
-        self.btn_convert.clicked.connect(self.convert_video)
-        self.btn_empty_convert.clicked.connect(self.convert_video)
+        self.btn_open_recordings.clicked.connect(self.open_recordings_folder)
+        self.empty_tracks.action_clicked.connect(self.import_audio)
         self.btn_new_list.clicked.connect(self.create_playlist)
         self.btn_delete_list.clicked.connect(self.delete_current_playlist)
         self.btn_toggle_list.clicked.connect(self.toggle_list_panel)
@@ -995,8 +1044,7 @@ class ShadowingView(QWidget):
             if self.combo_playlist.count() == 0:
                 self.empty_tracks.set_content(
                     "还没有播放列表",
-                    "点「导入音频」把录音复制进工具音频库（源文件原地不动），"
-                    "或用「转换视频」从 OBS 录制的视频里提出音轨。",
+                    "点「导入音频」把音频复制进工具音频库（源文件原地不动）。",
                     action_text="导入音频",
                     action_icon="music",
                     glyph="music",
@@ -1224,6 +1272,8 @@ class ShadowingView(QWidget):
                 failures.append(f"〔{os.path.basename(path)}〕导入失败：{error}")
 
         self.reload_tracks()
+        if self.track_id is None and self._items:
+            self.load_track(self._items[0]["track_id"])
         self._report_import(len(paths), imported, reused, failures, copied_bytes)
 
     def _report_import(self, total, imported, reused, failures, copied_bytes):
@@ -1244,76 +1294,6 @@ class ShadowingView(QWidget):
         elif imported:
             self.banner.clear()
             show_toast(self.window(), f"已导入 {imported} 个文件（{audio.human_size(copied_bytes)}）")
-
-    def convert_video(self):
-        """流程 B：OBS 录制的 MKV → ffmpeg 抽音轨 → 入库并加入当前列表。"""
-        path, _ = QFileDialog.getOpenFileName(self, "选择视频", "", audio.VIDEO_FILTER)
-        if path:
-            self._start_conversion(path)
-
-    def _start_conversion(self, path):
-        if self._worker is not None and self._worker.isRunning():
-            self._show_banner("info", "上一个转换还没结束，等它跑完再试。")
-            return
-        if not os.path.isfile(path):
-            self._show_banner("warning", f"找不到文件：{path}")
-            return
-        if self.playlist_id is None:
-            self.playlist_id = self.database.create_playlist("我的听力")
-            self.reload_playlists()
-
-        name = os.path.splitext(os.path.basename(path))[0]
-        partial = os.path.join(AUDIO_DIR, name + ".part.mp3")
-        self._pending_video_name = name
-        self.btn_convert.setEnabled(False)
-        self._set_status("正在提取音频…")
-
-        self._worker = FFmpegWorker(
-            ["-y", "-i", path, "-q:a", "0", "-map", "a", partial], partial
-        )
-        self._worker.progress.connect(lambda _: self._set_status("正在提取音频…"))
-        self._worker.finished.connect(self._on_conversion_finished)
-        self._worker.start()
-
-    def _on_conversion_finished(self, success, result):
-        self.btn_convert.setEnabled(True)
-        name = self._pending_video_name
-        partial = os.path.join(AUDIO_DIR, name + ".part.mp3")
-
-        if not success:
-            self._remove_quietly(partial)   # 失败不留半个文件
-            self._set_status("转换失败")
-            if result == "未检测到 ffmpeg":
-                self._show_banner(
-                    "warning",
-                    "未检测到 ffmpeg，无法转换视频。请安装后重启工具，"
-                    "或手动用其他工具转成 MP3 再导入。",
-                )
-            else:
-                self._show_banner("warning", f"视频转换失败：{result}")
-            return
-
-        final_name = audio.unique_name(name + ".mp3", AUDIO_DIR)
-        final_path = os.path.join(AUDIO_DIR, final_name)
-        try:
-            os.replace(partial, final_path)
-        except OSError as error:
-            self._remove_quietly(partial)
-            self._show_banner("danger", f"音频已生成但未能入库：{error.strerror or error}")
-            return
-
-        digest = audio.content_hash(final_path)
-        track_id = self.database.add_audio_track(
-            os.path.normpath(final_name),
-            final_name,
-            size=os.path.getsize(final_path),
-            content_hash=digest,
-        )
-        self.database.add_track_to_playlist(self.playlist_id, track_id)
-        self.reload_tracks()
-        self._set_status(f"已加入：{final_name}")
-        self.banner.clear()
-        show_toast(self.window(), "视频已转换为 MP3 并加入列表")
 
     @staticmethod
     def _remove_quietly(path):
@@ -1337,6 +1317,10 @@ class ShadowingView(QWidget):
             if autoplay and self.player.playbackState() != QMediaPlayer.PlaybackState.PlayingState:
                 self.player.play()
             return
+
+        # 录音期间切曲目：先把上一首在轨迹里封口，免得上一首的路径和越界时长跨到新曲目里
+        if self._recording:
+            self._rec_close_segment()
 
         self.flush_study_session()
         item = self.database.get_track(track_id)
@@ -1559,7 +1543,8 @@ class ShadowingView(QWidget):
                 self.track_unlogged_ms += delta
             self.last_position = position
 
-        self.slider.setValue(position)
+        if not self.slider.isSliderDown():
+            self.slider.setValue(position)
         self.lbl_current_time.setText(stamp(position))
 
         # AB 循环：播到 B 点回到 A 点。**不推进列表**——用户正是在死磕这一句。
@@ -1669,8 +1654,10 @@ class ShadowingView(QWidget):
         self._save_ab()
 
     def _sync_ab_buttons(self):
-        self.btn_a.setText(f"A：{stamp(self.pos_a)}" if self.pos_a >= 0 else "设 A 点")
-        self.btn_b.setText(f"B：{stamp(self.pos_b)}" if self.pos_b >= 0 else "设 B 点")
+        self.btn_a.setText(f"A: {stamp(self.pos_a)}" if self.pos_a >= 0 else "设 A 点")
+        self.btn_b.setText(f"B: {stamp(self.pos_b)}" if self.pos_b >= 0 else "设 B 点")
+        self.btn_a.setToolTip(f"A 点: {stamp(self.pos_a)}" if self.pos_a >= 0 else "设为 A 点（快捷键 A）")
+        self.btn_b.setToolTip(f"B 点: {stamp(self.pos_b)}" if self.pos_b >= 0 else "设为 B 点（快捷键 B）")
         active = self.pos_a >= 0 and self.pos_b > self.pos_a
         self.btn_clear_ab.setEnabled(active)
 
@@ -1718,6 +1705,85 @@ class ShadowingView(QWidget):
         # 输入设备也是显式装的（理由同 apply_audio_devices）
         self.apply_audio_devices()
 
+    def open_recordings_folder(self):
+        """在系统文件管理器中打开已保存跟读录音的文件夹。"""
+        folder = self.database.get_recording_dir()
+        try:
+            os.makedirs(folder, exist_ok=True)
+        except OSError as error:
+            self._show_banner("danger", f"录音目录不可访问：{error.strerror or error}")
+            return
+        if not QDesktopServices.openUrl(QUrl.fromLocalFile(folder)):
+            self._show_banner("warning", f"无法打开录音文件夹：{folder}")
+
+    def _generate_recording_filename(self, folder, extension):
+        """按照业务规范生成录音文件名。
+
+        规则示例：“影子跟读96届 13-24第5次.m4a”
+        格式组成：影子跟读 + [播放列表名] + 空格 + [曲目标题] + 第[N]次 + 扩展名。
+        自动遍历历史录音目录（包含归档等子目录），计算当前列表与曲目的下一个序号 N。
+        """
+        playlist_text = self.combo_playlist.currentText().strip() if self.combo_playlist.count() > 0 else ""
+        if playlist_text:
+            playlist_norm = re.sub(r"^(\d+)\s*讲$", r"\1届", playlist_text)
+            playlist_clean = safe_stem(playlist_norm, "")
+        else:
+            playlist_clean = ""
+
+        item = self._current_item()
+        track_title = item.get("title", "") if item else ""
+        track_stem = os.path.splitext(track_title)[0] if track_title else ""
+        track_clean = safe_stem(track_stem, "")
+
+        if playlist_clean and track_clean:
+            base = f"影子跟读{playlist_clean} {track_clean}"
+        elif playlist_clean:
+            base = f"影子跟读{playlist_clean}"
+        elif track_clean:
+            base = f"影子跟读 {track_clean}"
+        else:
+            base = "影子跟读"
+
+        # 扫描历史目录（含子目录如归档）提取最大已有录音序号
+        pl_chars = re.sub(r"\s+", "", playlist_clean) if playlist_clean else ""
+        tr_chars = re.sub(r"\s+", "", track_clean) if track_clean else ""
+        pl_pat = r"\s*".join(re.escape(c) for c in pl_chars) if pl_chars else ""
+        tr_pat = r"\s*".join(re.escape(c) for c in tr_chars) if tr_chars else ""
+
+        if pl_pat and tr_pat:
+            pattern = re.compile(rf"^影子跟读\s*{pl_pat}\s+{tr_pat}\s*第(\d+)次", re.IGNORECASE)
+        elif pl_pat:
+            pattern = re.compile(rf"^影子跟读\s*{pl_pat}\s*第(\d+)次", re.IGNORECASE)
+        elif tr_pat:
+            pattern = re.compile(rf"^影子跟读\s*{tr_pat}\s*第(\d+)次", re.IGNORECASE)
+        else:
+            pattern = re.compile(r"^影子跟读\s*第(\d+)次", re.IGNORECASE)
+
+        max_count = 0
+        if os.path.isdir(folder):
+            try:
+                for root, dirs, files in os.walk(folder):
+                    for fname in files:
+                        if fname.startswith("."):
+                            continue
+                        match = pattern.search(fname)
+                        if match:
+                            try:
+                                val = int(match.group(1))
+                                if val > max_count:
+                                    max_count = val
+                            except ValueError:
+                                pass
+            except OSError:
+                pass
+
+        count = max_count + 1
+        name = f"{base}第{count}次{extension}"
+        while os.path.exists(os.path.join(folder, name)):
+            count += 1
+            name = f"{base}第{count}次{extension}"
+        return name
+
     def toggle_recording(self):
         if self._recording:
             self.stop_recording()
@@ -1746,10 +1812,8 @@ class ShadowingView(QWidget):
             return
 
         self._setup_recorder()
-        item = self._current_item()
-        stem = safe_stem(os.path.splitext(item["title"])[0] if item else "", "跟读")
         media_format, extension = preferred_audio_format()
-        name = f"{stem}-{datetime.now().strftime('%Y%m%d-%H%M%S')}{extension}"
+        name = self._generate_recording_filename(folder, extension)
         path = os.path.join(folder, name)
 
         self.recorder.setMediaFormat(media_format)
@@ -1809,6 +1873,15 @@ class ShadowingView(QWidget):
             return
         self._last_recording = location
         size = os.path.getsize(location)
+
+        # 确保所有轨迹段都已正常闭合
+        now = self._rec_elapsed()
+        for seg in self._rec_segments:
+            if seg.get("end") is None:
+                seg["end"] = max(seg.get("start", 0.0), now)
+            elif seg["end"] < seg.get("start", 0.0):
+                seg["end"] = seg.get("start", 0.0)
+
         segments, self._rec_segments = self._rec_segments, []
         self._rec_started = None
         if segments:
@@ -1850,25 +1923,46 @@ class ShadowingView(QWidget):
             # 原音没在响，轨迹上就不该有这一段。按下录音时播放正好停着就是这种情况
             # ——不拦的话，那几秒会被算成"原音在这里响过"。
             return
-        if self._rec_segments and self._rec_segments[-1]["end"] is None:
-            return   # 已经在记了，别叠段
         path = self._rec_source_path()
-        if path is None:
+        if path is None or not os.path.isfile(path):
             return
+
+        now = self._rec_elapsed()
+
+        # 如果上一段还开着：
+        if self._rec_segments and self._rec_segments[-1]["end"] is None:
+            prev = self._rec_segments[-1]
+            if prev.get("path") == path:
+                # 同一个音频文件，已经在记了，不重复开段
+                return
+            # 切了新音频但旧段还没封口：立即封口旧段
+            prev["end"] = max(prev.get("start", 0.0), now)
+
         if position_ms is None:
             position_ms = self.last_position
+        pos_sec = max(0.0, float(position_ms or 0) / 1000.0)
+
+        # 校验避免 seek 超出文件自身时长导致 ffmpeg 解码 0 帧
+        item = self._current_item()
+        dur_ms = item.get("duration_ms") if item else None
+        if dur_ms and dur_ms > 0:
+            max_pos = float(dur_ms) / 1000.0
+            if pos_sec >= max_pos:
+                return
+
         self._rec_segments.append({
-            "start": self._rec_elapsed(),
+            "start": now,
             "end": None,
             "path": path,
-            "pos": max(0, int(position_ms)) / 1000.0,
+            "pos": pos_sec,
             "speed": float(self.player.playbackRate() or 1.0),
         })
 
     def _rec_close_segment(self):
-        """原音停了（暂停 / 播放结束 / 录音结束）：给当前这一段封口。"""
+        """原音停了（暂停 / 播放结束 / 录音结束 / 切曲目）：给当前这一段封口。"""
         if self._rec_segments and self._rec_segments[-1]["end"] is None:
-            self._rec_segments[-1]["end"] = self._rec_elapsed()
+            now = self._rec_elapsed()
+            self._rec_segments[-1]["end"] = max(self._rec_segments[-1].get("start", 0.0), now)
 
     def _rec_jump(self, position_ms):
         """原音跳到别处去了（拖进度条 / AB 回跳 / 换语速）。
@@ -1887,8 +1981,8 @@ class ShadowingView(QWidget):
         **为什么是事后按轨迹重建，而不是"直接录系统正在放的声音"**：Qt 没有把播放器的
         输出接进捕获链的公开接口（`QMediaCaptureSession` 的 `setAudioOutput` 是给监听用
         的，不是混音），Windows 的环回采集（WASAPI loopback）在 QtMultimedia 里也没开放。
-        而 ffmpeg 本来就是本项目的依赖（MKV 转 MP3 那条路在用），照轨迹剪一遍最简单，
-        也最可控——混不成功时**人声那条还在**，不会两头落空。
+        而 ffmpeg 本来就是本项目的依赖，照轨迹剪一遍最简单，也最可控——混不成功时
+        **人声那条还在**，不会两头落空。
 
         轨迹就是答案。原来的做法是"按下录音那一刻的位置 + 整段原音"，它有两个必然的
         错法：你只念了一半就停手，混出来的后半段接着放原音（只剩听力没有你）；你念到
@@ -1901,10 +1995,52 @@ class ShadowingView(QWidget):
             self._show_banner("info", "上一次合成还没跑完，等它结束再录。")
             self.lbl_recording.setText(f"已保存 {os.path.basename(location)}（仅人声）")
             return
-        mixed = os.path.splitext(location)[0] + "-原音混合.m4a"
-        args = self._mix_args(location, segments, mixed)
+
+        # 过滤并清洗轨迹段：
+        # 1. 音频源文件必须真实存在
+        # 2. 持续时长 >= 0.15 秒（过滤切曲目/拖拽产生的极小碎片，防止 ffmpeg amix 因空帧崩溃）
+        # 3. 确保 pos 和 speed 合法
+        valid_segments = []
+        for seg in segments:
+            path = seg.get("path")
+            if not path or not os.path.isfile(path):
+                continue
+            start = float(seg.get("start", 0.0))
+            end = float(seg.get("end") if seg.get("end") is not None else start)
+            wall = end - start
+            if wall < 0.15:
+                continue
+            pos = max(0.0, float(seg.get("pos", 0.0)))
+            speed = float(seg.get("speed") or 1.0)
+            if speed <= 0:
+                speed = 1.0
+
+            valid_segments.append({
+                "start": start,
+                "end": end,
+                "path": path,
+                "pos": pos,
+                "speed": speed,
+            })
+
+        if not valid_segments:
+            self.lbl_recording.setText(
+                f"已保存 {os.path.basename(location)}（仅人声，{audio.human_size(size)}）"
+                f" · 来自 {self.current_input_name() or '默认麦克风'}"
+            )
+            self.lbl_recording.setToolTip(location)
+            self._warn_if_silent(location, size)
+            return
+
+        mixed = os.path.join(
+            os.path.dirname(location),
+            f".temp_mix_{os.path.basename(location)}"
+        )
+        if not mixed.lower().endswith(".m4a"):
+            mixed = os.path.splitext(mixed)[0] + ".m4a"
+        args = self._mix_args(location, valid_segments, mixed)
         self.lbl_recording.setText(
-            f"正在合成原音…（{len(segments)} 段 · {audio.human_size(size)} 的人声）"
+            f"正在合成原音…（{len(valid_segments)} 段 · {audio.human_size(size)} 的人声）"
         )
         self._mix_worker = FFmpegWorker(args, mixed)
         self._mix_worker.finished.connect(self._on_mix_finished)
@@ -1932,10 +2068,10 @@ class ShadowingView(QWidget):
           atempo 是整条流等比缩放，所以延迟先乘语速、之后被缩回去，长度正好。
           别再"顺手"把两个滤镜调换回来。
         """
-        args = ["-y"]
+        args = ["-y", "-nostdin"]
         filters = []
         for index, segment in enumerate(segments):
-            wall = max(0.05, float(segment["end"] or 0.0) - float(segment["start"]))
+            wall = max(0.1, float(segment["end"]) - float(segment["start"]))
             speed = float(segment["speed"] or 1.0)
             args += [
                 "-ss", f"{float(segment['pos']):.3f}",
@@ -1980,27 +2116,50 @@ class ShadowingView(QWidget):
     def _on_mix_finished(self, success, result):
         raw = self._last_recording
         if not success:
-            if result == "未检测到 ffmpeg":
+            if "未检测到 ffmpeg" in str(result):
                 self._show_banner(
                     "warning",
                     "没检测到 ffmpeg，这条录音里只有你的声音。装上 ffmpeg 之后，"
                     "录音会自动把原音一起混进去。",
                 )
             else:
-                self._show_banner("warning", f"原音合成失败：{result}。人声那条已经保存下来了。")
-            if raw:
+                self._show_banner("warning", f"原音合成失败：{result}。人声录音已完整保存。")
+            if raw and os.path.isfile(raw):
                 self.lbl_recording.setText(f"已保存 {os.path.basename(raw)}（仅人声）")
+                self.lbl_recording.setToolTip(raw)
             return
-        # 先判人声那一条是不是几乎没录到（合成之后没法再从文件大小看出来），再删它
+
+        final_path = raw
         if raw and os.path.isfile(raw):
             self._warn_if_silent(raw, os.path.getsize(raw))
-            self._remove_quietly(raw)
-        size = os.path.getsize(result)
-        self._last_recording = result
+            if os.path.splitext(raw)[1].lower() != ".m4a" and result.lower().endswith(".m4a"):
+                target_path = os.path.splitext(raw)[0] + ".m4a"
+                try:
+                    os.replace(result, target_path)
+                    self._remove_quietly(raw)
+                    final_path = target_path
+                except OSError:
+                    final_path = result
+            else:
+                try:
+                    os.replace(result, raw)
+                    final_path = raw
+                except OSError:
+                    try:
+                        os.remove(raw)
+                        os.rename(result, raw)
+                        final_path = raw
+                    except OSError:
+                        final_path = result
+        else:
+            final_path = result
+
+        size = os.path.getsize(final_path)
+        self._last_recording = final_path
         self.lbl_recording.setText(
-            f"已保存 {os.path.basename(result)}（原音 + 你的声音，{audio.human_size(size)}）"
+            f"已保存 {os.path.basename(final_path)}（原音 + 你的声音，{audio.human_size(size)}）"
         )
-        self.lbl_recording.setToolTip(result)
+        self.lbl_recording.setToolTip(final_path)
 
     def _warn_if_silent(self, location, size):
         """录到一条**静音**音轨时，文件照样存在、时长照样有，只是没声音——
@@ -2145,7 +2304,7 @@ class ShadowingView(QWidget):
             event.acceptProposedAction()
 
     def dropEvent(self, event):
-        """把文件拖进来 = 导入。视频走转换流程，其余按音频导入。
+        """把文件拖进来 = 导入音频。
 
         曲目列表自己是 InternalMove，外部 URL 的 drop 它不接，事件会冒泡到这里——
         所以在列表上松手也能导入，用户不需要瞄准。
@@ -2165,15 +2324,12 @@ class ShadowingView(QWidget):
         if audio_paths:
             self.import_paths(audio_paths)
         if video_paths:
-            if self._worker is not None and self._worker.isRunning():
-                self._show_banner("info", "上一个转换还没结束，等它跑完再试。")
-            else:
-                self._start_conversion(video_paths[0])
-        if not audio_paths and not video_paths:
-            self._show_banner("warning", "拖进来的文件既不是音频也不是视频，没有导入。")
+            self._show_banner("info", "已停止支持视频直接转换，请先转为音频文件（MP3 / M4A 等）后再导入。")
+        elif not audio_paths:
+            self._show_banner("warning", "拖进来的文件不是支持的音频格式，未导入。")
 
     def shutdown(self):
-        """关窗口时把后台转换收干净（与 P3 的 `vault_view.shutdown()` 同一条纪律：
+        """关窗口时把后台合成收干净（与 P3 的 `vault_view.shutdown()` 同一条纪律：
         QThread 还在跑就拆窗口，Qt 会打印 "Destroyed while thread is still running"）。
 
         同时把 `_closed` 立起来：库已经被关掉了，此后到达的 `hideEvent` 不该再写库。
@@ -2184,20 +2340,14 @@ class ShadowingView(QWidget):
         self._record_timer.stop()
         if self._recording:
             self.stop_recording()
-        worker = self._worker
-        if worker is not None and worker.isRunning():
-            worker.cancel()
-            worker.wait(3000)
         # 合成线程同理：跑到一半被拆掉，输出就停在一个半截文件上
         mixer = self._mix_worker
         if mixer is not None and mixer.isRunning():
             mixer.cancel()
             mixer.wait(3000)
             # 半截的合成产物留着没有意义，还会被当成一条真录音
-            if self._last_recording:
-                self._remove_quietly(
-                    os.path.splitext(self._last_recording)[0] + "-原音混合.m4a"
-                )
+            if mixer.output:
+                self._remove_quietly(mixer.output)
         self.player.stop()
 
     # ---- 错误提示 ----

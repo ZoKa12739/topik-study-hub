@@ -10,7 +10,7 @@
 
 from datetime import date, datetime
 
-from PySide6.QtCore import Qt, Signal
+from PySide6.QtCore import QSize, Qt, Signal
 from PySide6.QtWidgets import (
     QCheckBox,
     QFrame,
@@ -97,6 +97,8 @@ class DayCell(QFrame):
         layout.addWidget(self.stat_label)
 
     def __getitem__(self, key):
+        if isinstance(key, int):
+            raise IndexError(key)
         if key == "frame":
             return self
         if key == "weekday":
@@ -140,10 +142,39 @@ class PlannerView(QWidget):
         title_block.addWidget(subtitle)
         heading.addLayout(title_block)
         heading.addStretch()
+
+        self.countdown_card = QFrame()
+        self.countdown_card.setObjectName("countdownCard")
+        cd_layout = QHBoxLayout(self.countdown_card)
+        cd_layout.setContentsMargins(16, 8, 16, 8)
+        cd_layout.setSpacing(14)
+
+        cd_left = QVBoxLayout()
+        cd_left.setSpacing(2)
+        cd_left.setAlignment(Qt.AlignVCenter)
+        self.countdown_target = QLabel("TOPIK 考试")
+        self.countdown_target.setObjectName("countdownTarget")
+        cd_left.addWidget(self.countdown_target)
+        self.countdown_sub = QLabel("备考倒计时还有")
+        self.countdown_sub.setObjectName("countdownSub")
+        cd_left.addWidget(self.countdown_sub)
+        cd_layout.addLayout(cd_left)
+
+        cd_right = QHBoxLayout()
+        cd_right.setSpacing(3)
+        cd_right.setAlignment(Qt.AlignVCenter | Qt.AlignRight)
+        self.countdown_number = QLabel("—")
+        self.countdown_number.setObjectName("countdownNumber")
+        cd_right.addWidget(self.countdown_number)
+        self.countdown_unit = QLabel("天")
+        self.countdown_unit.setObjectName("countdownUnit")
+        cd_right.addWidget(self.countdown_unit)
+        cd_layout.addLayout(cd_right)
+
         self.countdown = QLabel()
-        self.countdown.setObjectName("countdown")
-        self.countdown.setAlignment(Qt.AlignRight | Qt.AlignVCenter)
-        heading.addWidget(self.countdown)
+        self.countdown.setVisible(False)
+
+        heading.addWidget(self.countdown_card)
         layout.addLayout(heading)
 
         # H2 指标行（D1 的四张卡）：今日完成 / 连续学习 / 本周进度 / 今日亮点。
@@ -342,9 +373,18 @@ class PlannerView(QWidget):
         label, exam_date_text = self.database.get_exam()
         try:
             days = (date.fromisoformat(exam_date_text) - date.today()).days
-            self.countdown.setText(f"距 {label} 还有 {max(days, 0)} 天")
+            days_num = max(days, 0)
+            self.countdown_target.setText(f"距 {label}" if label else "TOPIK 考试")
+            self.countdown_sub.setText("冲刺倒计时还有")
+            self.countdown_number.setText(str(days_num))
+            self.countdown_unit.setText("天")
+            self.countdown.setText(f"距 {label} 还有 {days_num} 天")
         except ValueError:
-            self.countdown.setText(label)
+            self.countdown_target.setText(label or "TOPIK 考试")
+            self.countdown_sub.setText("未设置考试日期")
+            self.countdown_number.setText("—")
+            self.countdown_unit.setText("")
+            self.countdown.setText(label or "")
 
     def _refresh_metrics(self, stats, records):
         self.done_value.setText(f"{stats['completed_today']} / {stats['total_today']}")
@@ -559,18 +599,18 @@ class PlannerView(QWidget):
             item = QListWidgetItem()
             row = QWidget()
             row_layout = QHBoxLayout(row)
-            row_layout.setContentsMargins(6, 4, 6, 4)
+            row_layout.setContentsMargins(6, 2, 6, 2)
             checkbox = QCheckBox(task["title"])
             checkbox.setChecked(bool(task["completed"]))
             checkbox.toggled.connect(
                 lambda checked, task_id=task["id"]: self.toggle_task(task_id, checked)
             )
             delete_button = QPushButton("删除")
-            delete_button.setObjectName("iconButton")
+            delete_button.setObjectName("taskDeleteButton")
             delete_button.clicked.connect(lambda _, task_id=task["id"]: self.delete_task(task_id))
             row_layout.addWidget(checkbox, 1)
             row_layout.addWidget(delete_button)
-            item.setSizeHint(row.sizeHint())
+            item.setSizeHint(QSize(0, 36))
             self.task_list.addItem(item)
             self.task_list.setItemWidget(item, row)
 

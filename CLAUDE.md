@@ -150,6 +150,15 @@ Things that are easy to get wrong here:
 - **专攻 deliberately does not touch the cursor.** The second pass re-judges words; moving the first-pass cursor from here would scramble it.
 - **Re-importing the same TSV must keep notes and progress.** `import_word_list` rebuilds `words` (first layer) and reuses the `word_lists` row by `source_path`, leaving `word_notes` / `word_list_progress` (second layer) untouched.
 - **The three mode buttons are `QPushButton`s, not `QRadioButton`s — Qt does not make them mutually exclusive.** `autoExclusive` defaults to false, and `clicked` toggles the button's own `checked` *before* the signal fires, so the default outcome of every click is "one more button lit". `set_mode()` therefore rewrites all three through `_sync_mode_buttons()`, on the rejected-switch branch too — 「全部词表」 refuses 过词/专攻, but by then the click has already checked the button. Setting only the current one (the original code) left the buttons accumulating in the checked state, which reads on screen as "三个全绿、退不回去" *(fixed 2026-10-06)*.
+- **过词 and 专攻 use centered entity cards (`QFrame#vocabCard`, width 640–760px)** rather than a bare full-window canvas: deck name, sequence number, and memory progress sit in low-contrast header labels; POS tags (`[词性]`) and notes/examples sit in peripheral muted capsules/micro-cards.
+- **专攻 supports single-step undo (`_undo_drill` / `btn_drill_undo`)**: restores the word's previous `(state, drill_rounds)` and decrements today's `vocab_drilled` activity count (`delta=-1`).
+- **Shortcuts use `Qt.WindowShortcut` scoped to page visibility**: enabled in `showEvent` and disabled in `hideEvent` so `1`/`2`/`3`/`Space`/`Ctrl+Z`/`R` trigger reliably anywhere on the page without requiring a click on the word label first, while never leaking to other tabs.
+- **Clicking outside clears editor focus and label selection**: `VocabView` installs an app-level `eventFilter` to clear `QTextEdit`/`QLineEdit` focus and `QLabel` (`TextSelectableByMouse`) selection when clicking blank card/page areas. Always guard `eventFilter` against re-entrancy (`_in_event_filter`) and disconnect on `destroyed` so multiple `MainWindow` instances in tests do not hit deleted C++ wrappers.
+
+### P2 影子跟读的录音与混音
+
+- **Lock reference audio at recording start (`self.recorded_ref_audio_path`)**: users may switch playlists or tracks before/after recording. `start_recording()` captures `self.current_audio_path` so `FFmpegWorker` mixes against the actual track that was shadowed, and falls back to saving the pure vocal recording if the reference stream is invalid or `amix` fails.
+- **Recording filename convention**: named after the active playlist and question range + attempt number (`影子跟读 {届数}届{起止题号}第{N}次.mp3`), with a direct toolbar button to open `data/recordings/`.
 
 ### P3 资料库的索引
 
@@ -218,6 +227,7 @@ Things that are easy to get wrong here:
   user work (6.5). Tags are in `snippet_tags`, keyed by `path`, same rule as `material_tags`.
 - **`snippets` / `snippet_tags` are in `_PATH_KEYED_TABLES`.** P3's 「重新定位」 moves a file; without
   this the note would stay on the old path and the image would come back with a bare filename as title.
+- **Editing a snippet title renames the physical file on disk**: `_save_title()` sanitizes the new title, preserves the original file extension, resolves collisions via `unique_destination()`, renames the file on disk, and calls `database.relocate_file(old_path, new_path)` to update all `_PATH_KEYED_TABLES` (`materials`, `material_tags`, `material_usage`, `reading_progress`, `snippets`, `snippet_tags`) in one transaction.
 - **Thumbnails are decoded on demand.** `QListWidget` is not virtualized, so `_request_visible_thumbs()`
   (on scroll, resize, filter, mode change) queues only the items intersecting the viewport, and
   `QImageReader.setScaledSize` makes the *decoder* shrink — a 4K screenshot is never expanded to a full
@@ -247,6 +257,15 @@ Colors to be careful with:
 - A handful of `#FFFFFF` icon colors in the views are deliberate — white glyphs on the green `primaryButton`.
 
 Runtime state changes need `ui/style.py`'s `restyle()`. Qt does **not** re-evaluate QSS on `setObjectName()` alone; you must `unpolish`/`polish`.
+
+Layout & QSS sizing gotchas:
+
+- **Compact buttons must override global `QPushButton` padding**: `theme.py` sets `padding: 6px 14px` on `QPushButton` by default. Any button with a fixed small size (e.g., 28×28 zoom buttons or `46×24` row action buttons) will clip its text (`..`) unless given a dedicated `objectName` with `padding: 0px` or `padding: 2px 8px`.
+- **Sidebar vertical alignment & visual hierarchy**:
+  - Brand bar (`#brandBar`) is isolated from navigation items by a `24px` (`space-6`) bottom gap.
+  - Navigation items are grouped under low-contrast `QLabel#navSectionTitle` (`#98A29C`, `13px`, `margin-top: 20px; margin-bottom: 8px`) for `学习` and `资料`.
+  - Brand icon (`16px`) and `brandTitle` (`16px`, `#2A322D`) align on the exact same vertical centerline and left text edge as the sidebar `QListWidget` items.
+- **Temporary verification files**: Never leave `scratch/` directories or temporary screenshots in the repository root; use the conversation artifact `scratch/` directory or clean up before committing.
 
 ### Fonts
 

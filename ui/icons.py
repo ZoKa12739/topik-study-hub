@@ -102,6 +102,13 @@ _SVG = {
     "volume": '<path d="M11 5L6 9H2v6h4l5 4V5z"/>'
               '<path d="M15.5 8.5a5 5 0 0 1 0 7"/>'
               '<path d="M19 5a10 10 0 0 1 0 14"/>',
+
+    # ---- 窗口控制（无边框右上角三键） ----
+    "window-minimize": '<path d="M3.5 12h17"/>',
+    "window-maximize": '<rect x="3.5" y="3.5" width="17" height="17" rx="3.5"/>',
+    "window-restore": '<rect x="3.5" y="7.5" width="13" height="13" rx="2.5"/>'
+                      '<path d="M8 3.5h10a2.5 2.5 0 0 1 2.5 2.5v10"/>',
+    "window-close": '<path d="M18.5 5.5l-13 13M5.5 5.5l13 13"/>',
 }
 
 _TEMPLATE = (

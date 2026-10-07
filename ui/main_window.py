@@ -1,24 +1,113 @@
+import sys
 from pathlib import Path
 
 from PySide6.QtWidgets import (
+    QAbstractButton,
+    QAbstractItemView,
+    QAbstractSpinBox,
+    QApplication,
+    QComboBox,
     QFrame,
     QHBoxLayout,
     QLabel,
+    QLineEdit,
     QListWidget,
     QListWidgetItem,
     QMainWindow,
+    QPlainTextEdit,
     QPushButton,
+    QScrollBar,
+    QSlider,
     QStackedWidget,
+    QTextEdit,
     QVBoxLayout,
     QWidget,
 )
-from PySide6.QtCore import QSize, Qt, Signal
-from PySide6.QtGui import QKeySequence, QPixmap, QShortcut
+from PySide6.QtCore import QAbstractNativeEventFilter, QEvent, QObject, QSize, Qt, Signal
+from PySide6.QtGui import QCursor, QKeySequence, QPixmap, QShortcut
 
 from core.database import StudyDatabase
-from ui.icons import nav_icon
+from ui.icons import icon, nav_icon
 from ui.planner_view import PlannerView
 from ui.settings_view import SettingsView
+from ui.theme import TEXT_COLORS
+
+if sys.platform == "win32":
+    import ctypes
+    import ctypes.wintypes
+
+    class _MARGINS(ctypes.Structure):
+        _fields_ = [
+            ("cxLeftWidth", ctypes.c_int),
+            ("cxRightWidth", ctypes.c_int),
+            ("cyTopHeight", ctypes.c_int),
+            ("cyBottomHeight", ctypes.c_int),
+        ]
+
+
+class _WindowControlButton(QPushButton):
+    """右上角无边框窗口控制按钮（最小化 / 最大化还原 / 关闭）。"""
+
+    def __init__(self, icon_name, tooltip, is_close=False, parent=None):
+        super().__init__(parent)
+        self._is_close = is_close
+        self.setObjectName("winCloseBtn" if is_close else "winCtrlBtn")
+        self.setFixedSize(38, 30)
+        self.setIconSize(QSize(18, 18))
+        self.setCursor(Qt.PointingHandCursor)
+        self.setFocusPolicy(Qt.NoFocus)
+        self.setToolTip(tooltip)
+        self.set_icon_name(icon_name)
+
+    def set_icon_name(self, icon_name):
+        self._icon_name = icon_name
+        self._normal_icon = icon(icon_name, TEXT_COLORS["secondary"], 18)
+        hover_color = "#FFFFFF" if self._is_close else TEXT_COLORS["primary"]
+        self._hover_icon = icon(icon_name, hover_color, 18)
+        self.setIcon(self._normal_icon)
+
+    def enterEvent(self, event):
+        self.setIcon(self._hover_icon)
+        super().enterEvent(event)
+
+    def leaveEvent(self, event):
+        self.setIcon(self._normal_icon)
+        super().leaveEvent(event)
+
+
+class _Win32FramelessFilter(QAbstractNativeEventFilter):
+    """拦截 WM_NCCALCSIZE 消除系统原生白条，同时保留 WS_THICKFRAME | WS_CAPTION 的最小化/最大化原生过渡动画。"""
+
+    def __init__(self, hwnd):
+        super().__init__()
+        self._hwnd = int(hwnd)
+
+    def set_hwnd(self, hwnd):
+        self._hwnd = int(hwnd)
+
+    def nativeEventFilter(self, eventType, message):
+        if sys.platform == "win32" and eventType == b"windows_generic_MSG" and message:
+            try:
+                msg = ctypes.wintypes.MSG.from_address(int(message))
+                if msg.hWnd == self._hwnd and msg.message == 0x0083 and msg.wParam:
+                    return True, 0
+            except Exception:
+                pass
+        return False, 0
+
+
+class _WindowDragFilter(QObject):
+    """独立的全局鼠标事件过滤器，把拖拽与双击最大化转发给 MainWindow。"""
+
+    def __init__(self, window):
+        super().__init__(window)
+        self._window = window
+
+    def eventFilter(self, watched, event):
+        win = self._window
+        if win is not None and win._handle_drag_mouse_event(watched, event):
+            return True
+        return super().eventFilter(watched, event)
 
 
 class NavigationItemProxy:
@@ -127,9 +216,22 @@ class MainWindow(QMainWindow):
     # 因此 0~4 的顺序不可改动；closeEvent 也依赖它能拿到影子跟读页。
     NAV_PAGES = ("今日学习", "智能单词仓", "影子跟读", "TOPIK 资料库", "知识碎片")
     SETTINGS_INDEX = 5
+    RESIZE_MARGIN = 6
+    DRAG_BAR_HEIGHT = 56
 
     def __init__(self):
         super().__init__()
+        self.setWindowFlags(
+            Qt.WindowType.Window
+            | Qt.WindowType.FramelessWindowHint
+            | Qt.WindowType.WindowMinMaxButtonsHint
+            | Qt.WindowType.WindowSystemMenuHint
+        )
+        self.setAttribute(Qt.WidgetAttribute.WA_Hover, True)
+        self._drag_press_global = None
+        self._drag_window_offset = None
+        self._dragging_window = False
+        self._in_drag_filter = False
         self.database = StudyDatabase()
         self.setWindowTitle("TOPIK Study Hub")
         self.resize(1180, 760)
@@ -147,12 +249,14 @@ class MainWindow(QMainWindow):
         sidebar = QFrame()
         sidebar.setObjectName("sidebar")
         sidebar.setFixedWidth(228)
+        self.sidebar_frame = sidebar
         sidebar_layout = QVBoxLayout(sidebar)
         sidebar_layout.setContentsMargins(12, 16, 12, 12)
         sidebar_layout.setSpacing(0)
 
         # 品牌区域（物理隔离、像素级垂直对齐线、16px 品牌字号）
         brand_container = QWidget()
+        brand_container.setMinimumHeight(26)
         brand_layout = QHBoxLayout(brand_container)
         brand_layout.setContentsMargins(0, 0, 0, 0)
         brand_layout.setSpacing(0)
@@ -177,6 +281,7 @@ class MainWindow(QMainWindow):
 
         brand_title = QLabel("TOPIK Study Hub")
         brand_title.setObjectName("brandTitle")
+        brand_title.setMinimumHeight(24)
         brand_layout.addWidget(brand_title)
         brand_layout.addStretch()
 
@@ -218,6 +323,8 @@ class MainWindow(QMainWindow):
         self.sidebar.currentRowChanged.connect(self._on_nav_changed)
         self.sidebar.setCurrentRow(0)
         self._setup_shortcuts()
+        self._build_window_controls()
+        self._position_window_controls()
 
     def setup_tabs(self):
         from ui.shadowing_view import ShadowingView
@@ -332,7 +439,402 @@ class MainWindow(QMainWindow):
         self.sidebar.setCurrentRow(0)
         self.planner_view.task_input.setFocus()
 
+    # ---------------------------------------------------------------- 无边框窗口控制与原生交互
+
+    def _build_window_controls(self):
+        self.window_controls = QWidget(self)
+        self.window_controls.setObjectName("windowControls")
+        lay = QHBoxLayout(self.window_controls)
+        lay.setContentsMargins(0, 0, 0, 0)
+        lay.setSpacing(4)
+
+        self.btn_min = _WindowControlButton("window-minimize", "最小化", parent=self.window_controls)
+        self.btn_min.clicked.connect(self._minimize_window)
+        lay.addWidget(self.btn_min)
+
+        self.btn_max = _WindowControlButton("window-maximize", "最大化", parent=self.window_controls)
+        self.btn_max.clicked.connect(self._toggle_max_restore)
+        lay.addWidget(self.btn_max)
+
+        self.btn_close = _WindowControlButton("window-close", "关闭", is_close=True, parent=self.window_controls)
+        self.btn_close.clicked.connect(self.close)
+        lay.addWidget(self.btn_close)
+
+        self.window_controls.adjustSize()
+        self._sync_window_state_button()
+
+    def _is_window_maximized(self):
+        """实时查询窗口是否处于最大化状态。
+
+        在 Windows 下直接读 `user32.IsZoomed(hwnd)`：当通过 `WM_SYSCOMMAND` 或系统贴边触发
+        最大化/还原时，`QWindow.windowStateChanged` 发出那一刻 `QWidget.isMaximized()` 尚未
+        消费 `QEvent.WindowStateChange`（仍停留在上一次的旧值），直接读 `self.isMaximized()`
+        会导致图标、圆角和边距全部滞后一拍（甚至反相）。
+        """
+        if sys.platform == "win32" and QApplication.platformName() == "windows":
+            try:
+                hwnd = int(self.winId())
+                if hwnd:
+                    return bool(ctypes.windll.user32.IsZoomed(hwnd))
+            except Exception:
+                pass
+        win = self.windowHandle()
+        if win is not None:
+            return bool(win.windowState() & Qt.WindowState.WindowMaximized)
+        return self.isMaximized()
+
+    def _maximized_frame_margins(self):
+        """最大化时 Windows 为 WS_THICKFRAME 窗口外扩的隐形边框逻辑像素（常态为 (0, 0)）。"""
+        if sys.platform != "win32" or QApplication.platformName() != "windows":
+            return 0, 0
+        if not self._is_window_maximized() or self.isFullScreen():
+            return 0, 0
+        try:
+            hwnd = int(self.winId())
+            if not hwnd:
+                return 0, 0
+            user32 = ctypes.windll.user32
+            dpi = user32.GetDpiForWindow(hwnd) or 96
+            # SM_CXSIZEFRAME = 32, SM_CYSIZEFRAME = 33, SM_CXPADDEDBORDER = 92
+            fx_px = user32.GetSystemMetricsForDpi(32, dpi) + user32.GetSystemMetricsForDpi(92, dpi)
+            fy_px = user32.GetSystemMetricsForDpi(33, dpi) + user32.GetSystemMetricsForDpi(92, dpi)
+            dpr = float(self.devicePixelRatioF() or 1.0)
+            return int(round(fx_px / dpr)), int(round(fy_px / dpr))
+        except Exception:
+            return 8, 8
+
+    def _sync_maximized_margins(self):
+        cw = self.centralWidget()
+        if cw is None or cw.layout() is None:
+            return
+        mx, my = self._maximized_frame_margins()
+        cw.layout().setContentsMargins(mx, my, mx, my)
+
+    def _position_window_controls(self):
+        if not hasattr(self, "window_controls") or self.window_controls is None:
+            return
+        self.window_controls.adjustSize()
+        mx, my = self._maximized_frame_margins()
+        x = max(0, self.width() - self.window_controls.width() - 10 - mx)
+        self.window_controls.move(x, 8 + my)
+        self.window_controls.raise_()
+
+    def _minimize_window(self):
+        if sys.platform == "win32" and QApplication.platformName() == "windows":
+            try:
+                self._apply_win32_window_effects()
+                hwnd = int(self.winId())
+                if hwnd:
+                    user32 = ctypes.windll.user32
+                    user32.ReleaseCapture()
+                    # WM_SYSCOMMAND (0x0112), SC_MINIMIZE (0xF020)：触发 Windows 原生最小化缩放动画
+                    user32.SendMessageW(hwnd, 0x0112, 0xF020, 0)
+                    return
+            except Exception:
+                pass
+        self.showMinimized()
+
+    def _toggle_max_restore(self):
+        if sys.platform == "win32" and QApplication.platformName() == "windows":
+            try:
+                self._apply_win32_window_effects()
+                hwnd = int(self.winId())
+                if hwnd:
+                    user32 = ctypes.windll.user32
+                    # 双击事件发生在鼠标第二次按下（WM_LBUTTONDBLCLK）期间，此时 Qt 持有 SetCapture；
+                    # 若不先 ReleaseCapture()，Windows 会直接忽略 SC_MAXIMIZE / SC_RESTORE。
+                    user32.ReleaseCapture()
+                    # WM_SYSCOMMAND (0x0112): SC_RESTORE = 0xF120, SC_MAXIMIZE = 0xF030
+                    cmd = 0xF120 if self._is_window_maximized() else 0xF030
+                    user32.SendMessageW(hwnd, 0x0112, cmd, 0)
+                    self._apply_win32_window_effects()
+                    self._sync_window_state_button()
+                    self._sync_maximized_margins()
+                    self._position_window_controls()
+                    return
+            except Exception:
+                pass
+        if self._is_window_maximized():
+            self.showNormal()
+        else:
+            self.showMaximized()
+        self._apply_win32_window_effects()
+        self._sync_window_state_button()
+        self._sync_maximized_margins()
+        self._position_window_controls()
+
+    def _sync_window_state_button(self):
+        if not hasattr(self, "btn_max") or self.btn_max is None:
+            return
+        if self._is_window_maximized():
+            self.btn_max.set_icon_name("window-restore")
+            self.btn_max.setToolTip("向下还原")
+        else:
+            self.btn_max.set_icon_name("window-maximize")
+            self.btn_max.setToolTip("最大化")
+
+    def _apply_win32_window_effects(self):
+        if sys.platform != "win32" or QApplication.platformName() != "windows":
+            return
+        try:
+            hwnd = int(self.winId())
+            if not hwnd:
+                return
+            app = QApplication.instance()
+            if app is not None:
+                if getattr(self, "_win32_filter", None) is None:
+                    self._win32_filter = _Win32FramelessFilter(hwnd)
+                    app.installNativeEventFilter(self._win32_filter)
+                else:
+                    self._win32_filter.set_hwnd(hwnd)
+
+            user32 = ctypes.windll.user32
+            # 补齐 WS_THICKFRAME | WS_CAPTION | WS_MAXIMIZEBOX | WS_MINIMIZEBOX | WS_SYSMENU，
+            # 让 DWM 启用原生最小化/最大化缩放过渡动画，同时由 _Win32FramelessFilter 拦截 WM_NCCALCSIZE 消除白条
+            style = user32.GetWindowLongPtrW(hwnd, -16)
+            needed = 0x00040000 | 0x00C00000 | 0x00010000 | 0x00020000 | 0x00080000
+            if (style & needed) != needed:
+                user32.SetWindowLongPtrW(hwnd, -16, style | needed)
+                user32.SetWindowPos(hwnd, 0, 0, 0, 0, 0, 0x0037)
+
+            margins = _MARGINS(0, 0, 0, 1)
+            ctypes.windll.dwmapi.DwmExtendFrameIntoClientArea(
+                ctypes.wintypes.HWND(hwnd), ctypes.byref(margins)
+            )
+            # DWMWA_WINDOW_CORNER_PREFERENCE = 33; DWMWCP_ROUND = 2, DWMWCP_DONOTROUND = 1
+            corner_pref = ctypes.c_int(1 if (self._is_window_maximized() or self.isFullScreen()) else 2)
+            ctypes.windll.dwmapi.DwmSetWindowAttribute(
+                ctypes.wintypes.HWND(hwnd),
+                33,
+                ctypes.byref(corner_pref),
+                ctypes.sizeof(corner_pref),
+            )
+        except Exception:
+            pass
+
+    def showEvent(self, event):
+        super().showEvent(event)
+        app = QApplication.instance()
+        if app is not None:
+            if getattr(self, "_drag_filter", None) is None:
+                self._drag_filter = _WindowDragFilter(self)
+            app.installEventFilter(self._drag_filter)
+        win = self.windowHandle()
+        if win is not None and not getattr(self, "_win_state_connected", False):
+            win.windowStateChanged.connect(self._on_window_state_changed)
+            self._win_state_connected = True
+        self._apply_win32_window_effects()
+        self._sync_window_state_button()
+        self._sync_maximized_margins()
+        self._position_window_controls()
+
+    def hideEvent(self, event):
+        self._clear_resize_cursor()
+        self._remove_drag_event_filter()
+        super().hideEvent(event)
+
+    def resizeEvent(self, event):
+        super().resizeEvent(event)
+        self._sync_maximized_margins()
+        self._position_window_controls()
+
+    def _on_window_state_changed(self, _state=None):
+        self._clear_resize_cursor()
+        self._sync_window_state_button()
+        self._apply_win32_window_effects()
+        self._sync_maximized_margins()
+        self._position_window_controls()
+
+    def _edge_at(self, local_pos):
+        """返回窗口四周 6px 边缘对应的 Qt.Edge 组合与光标形状；非边缘或最大化时返回 (None, None)。"""
+        if self._is_window_maximized() or self.isFullScreen():
+            return None, None
+        x, y = local_pos.x(), local_pos.y()
+        w, h = self.width(), self.height()
+        m = self.RESIZE_MARGIN
+        if not (0 <= x <= w and 0 <= y <= h):
+            return None, None
+        left = x < m
+        right = x >= w - m
+        top = y < m
+        bottom = y >= h - m
+        if top and left:
+            return Qt.Edge.TopEdge | Qt.Edge.LeftEdge, Qt.CursorShape.SizeFDiagCursor
+        if bottom and right:
+            return Qt.Edge.BottomEdge | Qt.Edge.RightEdge, Qt.CursorShape.SizeFDiagCursor
+        if top and right:
+            return Qt.Edge.TopEdge | Qt.Edge.RightEdge, Qt.CursorShape.SizeBDiagCursor
+        if bottom and left:
+            return Qt.Edge.BottomEdge | Qt.Edge.LeftEdge, Qt.CursorShape.SizeBDiagCursor
+        if left:
+            return Qt.Edge.LeftEdge, Qt.CursorShape.SizeHorCursor
+        if right:
+            return Qt.Edge.RightEdge, Qt.CursorShape.SizeHorCursor
+        if top:
+            return Qt.Edge.TopEdge, Qt.CursorShape.SizeVerCursor
+        if bottom:
+            return Qt.Edge.BottomEdge, Qt.CursorShape.SizeVerCursor
+        return None, None
+
+    def _update_resize_cursor(self, cursor_shape):
+        current = getattr(self, "_resize_cursor_shape", None)
+        if cursor_shape is None:
+            if current is not None:
+                QApplication.restoreOverrideCursor()
+                self._resize_cursor_shape = None
+        else:
+            if current is None:
+                QApplication.setOverrideCursor(cursor_shape)
+                self._resize_cursor_shape = cursor_shape
+            elif current != cursor_shape:
+                QApplication.changeOverrideCursor(cursor_shape)
+                self._resize_cursor_shape = cursor_shape
+
+    def _clear_resize_cursor(self):
+        self._update_resize_cursor(None)
+
+    def _is_drag_region(self, global_pos):
+        """判定全局坐标是否处于可拖拽/双击最大化的空白热区（顶部 38px 通栏 + 侧边栏非交互空白处）。"""
+        local_pos = self.mapFromGlobal(global_pos)
+        x, y = local_pos.x(), local_pos.y()
+        w, h = self.width(), self.height()
+        if not (0 <= x < w and 0 <= y < h):
+            return False
+        edges, _ = self._edge_at(local_pos)
+        if edges is not None:
+            return False
+
+        sidebar_w = self.sidebar_frame.width() if hasattr(self, "sidebar_frame") else 228
+        in_top_bar = y <= self.DRAG_BAR_HEIGHT
+        in_sidebar = x < sidebar_w
+        if not (in_top_bar or in_sidebar):
+            return False
+
+        target = self.childAt(local_pos)
+        cur = target
+        interactive_types = (
+            QAbstractButton,
+            QLineEdit,
+            QTextEdit,
+            QPlainTextEdit,
+            QComboBox,
+            QAbstractSpinBox,
+            QSlider,
+            QScrollBar,
+            QAbstractItemView,
+        )
+        while cur is not None and cur is not self:
+            if cur is getattr(self, "window_controls", None):
+                return False
+            if isinstance(cur, interactive_types):
+                return False
+            cur = cur.parentWidget()
+        return True
+
+    def _handle_drag_mouse_event(self, watched, event):
+        if getattr(self, "_in_drag_filter", False):
+            return False
+        self._in_drag_filter = True
+        try:
+            if event is not None:
+                etype = event.type()
+                if etype in (
+                    QEvent.Type.HoverMove,
+                    QEvent.Type.MouseButtonDblClick,
+                    QEvent.Type.MouseButtonPress,
+                    QEvent.Type.MouseMove,
+                    QEvent.Type.MouseButtonRelease,
+                    QEvent.Type.Leave,
+                ) and self.isVisible():
+                    if etype == QEvent.Type.HoverMove and watched is self:
+                        if QApplication.mouseButtons() == Qt.MouseButton.NoButton:
+                            _, cursor_shape = self._edge_at(event.position().toPoint())
+                            self._update_resize_cursor(cursor_shape)
+                        return False
+                    if etype == QEvent.Type.Leave and watched is self:
+                        self._clear_resize_cursor()
+                        return False
+                    if isinstance(watched, QWidget) and watched.window() is self:
+                        if etype == QEvent.Type.MouseButtonDblClick:
+                            if event.button() == Qt.MouseButton.LeftButton:
+                                gpos = event.globalPosition().toPoint()
+                                if self._is_drag_region(gpos):
+                                    self._drag_press_global = None
+                                    self._dragging_window = False
+                                    self._toggle_max_restore()
+                                    return True
+                        elif etype == QEvent.Type.MouseButtonPress:
+                            if event.button() == Qt.MouseButton.LeftButton:
+                                gpos = event.globalPosition().toPoint()
+                                local_pos = self.mapFromGlobal(gpos)
+                                edges, _ = self._edge_at(local_pos)
+                                if edges is not None:
+                                    self._clear_resize_cursor()
+                                    win = self.windowHandle()
+                                    if win is not None and win.startSystemResize(edges):
+                                        return True
+                                if self._is_drag_region(gpos):
+                                    self._drag_press_global = gpos
+                                    self._drag_window_offset = gpos - self.frameGeometry().topLeft()
+                                    self._dragging_window = False
+                        elif etype == QEvent.Type.MouseMove:
+                            gpos = event.globalPosition().toPoint()
+                            if event.buttons() == Qt.MouseButton.NoButton:
+                                _, cursor_shape = self._edge_at(self.mapFromGlobal(gpos))
+                                self._update_resize_cursor(cursor_shape)
+                            elif self._drag_press_global is not None:
+                                if not (event.buttons() & Qt.MouseButton.LeftButton):
+                                    self._drag_press_global = None
+                                    self._dragging_window = False
+                                else:
+                                    if (
+                                        not self._dragging_window
+                                        and (gpos - self._drag_press_global).manhattanLength() >= 4
+                                    ):
+                                        self._dragging_window = True
+                                        self._clear_resize_cursor()
+                                        win = self.windowHandle()
+                                        # 优先交给系统级移动循环（原生支持 Win11 贴边分屏 Aero Snap 与多屏 DPI）
+                                        if win is not None and win.startSystemMove():
+                                            self._drag_press_global = None
+                                            self._dragging_window = False
+                                            return True
+                                    if self._dragging_window and self._drag_window_offset is not None:
+                                        if self.isMaximized():
+                                            self.showNormal()
+                                            self._sync_window_state_button()
+                                            self._drag_window_offset = QCursor.pos() - self.frameGeometry().topLeft()
+                                        self.move(gpos - self._drag_window_offset)
+                                        return True
+                        elif etype == QEvent.Type.MouseButtonRelease:
+                            self._drag_press_global = None
+                            self._dragging_window = False
+        except Exception:
+            pass
+        finally:
+            self._in_drag_filter = False
+        return False
+
+    def _remove_drag_event_filter(self, *_args):
+        self._clear_resize_cursor()
+        try:
+            app = QApplication.instance()
+            filt = getattr(self, "_drag_filter", None)
+            if app is not None and filt is not None:
+                app.removeEventFilter(filt)
+        except RuntimeError:
+            pass
+
     def closeEvent(self, event):
+        self._remove_drag_event_filter()
+        try:
+            app = QApplication.instance()
+            win32_filt = getattr(self, "_win32_filter", None)
+            if app is not None and win32_filt is not None:
+                app.removeNativeEventFilter(win32_filt)
+                self._win32_filter = None
+        except RuntimeError:
+            pass
         # 冲刷还没落库的学习数据，再关库——否则这部分会丢：
         #   * 影子跟读的跟读时长、播放位置、AB 点，以及还在防抖窗口里的原文/译文
         #   * P1 正在编辑、还在 1.5 秒防抖窗口里的笔记

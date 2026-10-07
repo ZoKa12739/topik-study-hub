@@ -227,10 +227,13 @@ class PlannerView(QWidget):
         card.setObjectName("metricCard")
         card_layout = QVBoxLayout(card)
         card_layout.setContentsMargins(16, 12, 16, 12)
+        card_layout.setSpacing(4)
         caption_label = QLabel(caption)
         caption_label.setObjectName("metricCaption")
+        caption_label.setMinimumHeight(18)
         value_label = QLabel(value)
         value_label.setObjectName("metricValue")
+        value_label.setMinimumHeight(30)
         card_layout.addWidget(caption_label)
         card_layout.addWidget(value_label)
         layout.addWidget(card, 0, column)
@@ -269,6 +272,7 @@ class PlannerView(QWidget):
         task_layout.addWidget(self.empty_label)
         self.task_list = QListWidget()
         self.task_list.setObjectName("taskList")
+        self.task_list.setMinimumHeight(80)
         task_layout.addWidget(self.task_list, 1)
         return task_card
 

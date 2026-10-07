@@ -188,6 +188,36 @@ QPushButton#navSettings:checked {{
     font-weight: 500;
 }}
 
+/* ---------- 窗口右上角控制按钮（无边框 CSD） ---------- */
+
+QPushButton#winCtrlBtn, QPushButton#winCloseBtn {{
+    background: transparent;
+    border: none;
+    border-radius: 6px;
+    padding: 0px;
+    min-width: 38px;
+    max-width: 38px;
+    min-height: 30px;
+    max-height: 30px;
+    outline: 0;
+}}
+
+QPushButton#winCtrlBtn:hover {{
+    background: #E6ECE7;
+}}
+
+QPushButton#winCtrlBtn:pressed {{
+    background: #DCE5DE;
+}}
+
+QPushButton#winCloseBtn:hover {{
+    background: #B4342B;
+}}
+
+QPushButton#winCloseBtn:pressed {{
+    background: #962922;
+}}
+
 /* ---------- 页头 ---------- */
 /* DESIGN.md §3.2：跨度压缩，层级改由明度承担 */
 
@@ -281,7 +311,7 @@ QFrame#surface, QFrame#metricCard {{
     border-radius: 8px;
 }}
 
-QFrame#metricCard {{ min-height: 64px; }}
+QFrame#metricCard {{ min-height: 76px; }}
 
 QLabel#metricValue {{
     color: #2A322D;

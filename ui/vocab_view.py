@@ -36,7 +36,6 @@
 """
 
 import os
-import re
 from pathlib import Path
 
 from PySide6.QtCore import QEvent, QTimer, Qt
@@ -92,17 +91,6 @@ _JUDGE_KEYS = (("1", "known"), ("2", "fuzzy"), ("3", "unknown"))
 
 def state_color(state):
     return _STATE_COLORS.get(state or "", _STATE_COLORS[""])
-
-
-def _extract_pos_and_meaning(raw_meaning):
-    """提取词性/主题（如 [名]、[动]、[登山]）与纯净释义。"""
-    raw = (raw_meaning or "").strip()
-    m = re.match(r"^[\[\(【]([^\]\)】]+)[\]\)】]\s*(.*)$", raw)
-    if m:
-        pos_tag = m.group(1).strip()
-        clean_meaning = m.group(2).strip()
-        return pos_tag, clean_meaning or raw
-    return "", raw
 
 
 class VocabView(QWidget):
@@ -433,15 +421,6 @@ class VocabView(QWidget):
 
         box.addStretch(1)
 
-        # 核心区域：词性/分类胶囊（周边辅助）
-        pos_row = QHBoxLayout()
-        pos_row.setAlignment(Qt.AlignCenter)
-        self.lbl_pass_pos = QLabel("")
-        self.lbl_pass_pos.setObjectName("vocabCardPos")
-        self.lbl_pass_pos.setVisible(False)
-        pos_row.addWidget(self.lbl_pass_pos)
-        box.addLayout(pos_row)
-
         self.lbl_pass_seq = QLabel("")
         self.lbl_pass_seq.setObjectName("quizSeq")
         self.lbl_pass_seq.setAlignment(Qt.AlignCenter)
@@ -458,19 +437,6 @@ class VocabView(QWidget):
         self.lbl_pass_cn.setAlignment(Qt.AlignCenter)
         self.lbl_pass_cn.setWordWrap(True)
         box.addWidget(make_copyable(self.lbl_pass_cn))
-
-        # 例句 / 联想笔记周边槽（低对比度浅底微卡）
-        self.box_pass_note = QFrame()
-        self.box_pass_note.setObjectName("vocabCardNoteBox")
-        note_layout = QVBoxLayout(self.box_pass_note)
-        note_layout.setContentsMargins(12, 8, 12, 8)
-        self.lbl_pass_note = QLabel("")
-        self.lbl_pass_note.setObjectName("vocabCardNoteText")
-        self.lbl_pass_note.setWordWrap(True)
-        self.lbl_pass_note.setAlignment(Qt.AlignCenter)
-        note_layout.addWidget(self.lbl_pass_note)
-        self.box_pass_note.setVisible(False)
-        box.addWidget(self.box_pass_note)
 
         box.addStretch(1)
 
@@ -547,15 +513,6 @@ class VocabView(QWidget):
 
         box.addStretch(1)
 
-        # 核心区域：词性/分类胶囊（周边辅助）
-        pos_row = QHBoxLayout()
-        pos_row.setAlignment(Qt.AlignCenter)
-        self.lbl_drill_pos = QLabel("")
-        self.lbl_drill_pos.setObjectName("vocabCardPos")
-        self.lbl_drill_pos.setVisible(False)
-        pos_row.addWidget(self.lbl_drill_pos)
-        box.addLayout(pos_row)
-
         self.lbl_drill_seq = QLabel("")
         self.lbl_drill_seq.setObjectName("quizSeq")
         self.lbl_drill_seq.setAlignment(Qt.AlignCenter)
@@ -573,24 +530,14 @@ class VocabView(QWidget):
         self.lbl_drill_cn.setWordWrap(True)
         box.addWidget(make_copyable(self.lbl_drill_cn))
 
-        # 专攻笔记输入区
-        note_box = QFrame()
-        note_box.setObjectName("vocabDrillNoteBox")
-        note_vbox = QVBoxLayout(note_box)
-        note_vbox.setContentsMargins(10, 8, 10, 8)
-        note_vbox.setSpacing(4)
-        note_header = QLabel("个人笔记 / 记忆法（停止输入自动保存）")
-        note_header.setObjectName("vocabCardNoteHeader")
-        note_vbox.addWidget(note_header)
-
+        # 专攻笔记输入区：恢复原先样式（直接放置 QTextEdit，无外框包装与标题）
         self.txt_drill_notes = QTextEdit()
-        self.txt_drill_notes.setPlaceholderText("写下联想记忆、易混词辨析或例句…")
-        self.txt_drill_notes.setMaximumHeight(85)
+        self.txt_drill_notes.setPlaceholderText("写下联想记忆——这一遍的目的就是让下次不用再攻它")
+        self.txt_drill_notes.setMaximumHeight(100)
         self.txt_drill_notes.textChanged.connect(
             lambda: self._on_note_edited(self.txt_drill_notes, self.lbl_drill_saved)
         )
-        note_vbox.addWidget(self.txt_drill_notes)
-        box.addWidget(note_box)
+        box.addWidget(self.txt_drill_notes)
 
         box.addStretch(1)
 
@@ -1166,13 +1113,9 @@ class VocabView(QWidget):
 
         row = self._browse_rows[index]
         self._detail = row
-        pos_tag, clean_meaning = _extract_pos_and_meaning(row["meaning"])
-        if pos_tag:
-            self.lbl_detail_seq.setText(f"第 {row['seq']} 个 · [{pos_tag}]")
-        else:
-            self.lbl_detail_seq.setText(f"第 {row['seq']} 个")
+        self.lbl_detail_seq.setText(f"第 {row['seq']} 个")
         self.lbl_detail_kr.setText(row["korean"])
-        self.lbl_detail_cn.setText(clean_meaning or row["meaning"] or "")
+        self.lbl_detail_cn.setText(row["meaning"] or "")
 
         note = self.database.get_word_note(row["korean"])
         # 屏蔽信号：载入笔记不该触发"内容变化 → 自动保存"
@@ -1282,10 +1225,6 @@ class VocabView(QWidget):
         finished = self._pass_index >= len(self._pass_rows)
         self.lbl_pass_seq.setText("")
         self.lbl_pass_kr.setText("这一遍过完了" if finished else "")
-        if hasattr(self, "lbl_pass_pos"):
-            self.lbl_pass_pos.setVisible(False)
-        if hasattr(self, "box_pass_note"):
-            self.box_pass_note.setVisible(False)
         for button in self._judge_buttons.values():
             button.setEnabled(not finished)
         if hasattr(self, "btn_pass_undo"):
@@ -1293,7 +1232,7 @@ class VocabView(QWidget):
 
         if finished:
             if hasattr(self, "lbl_pass_meta"):
-                self.lbl_pass_meta.setText(f"《{self.current_list_name()}》 · 全部完成")
+                self.lbl_pass_meta.setText(f"《{self.current_list_name()}》")
             restyle(self.lbl_pass_cn, "quizMeaning")
             self.lbl_pass_cn.setText(
                 "切到「专攻」去攻被标出来的词，或者直接再过一遍。"
@@ -1301,31 +1240,12 @@ class VocabView(QWidget):
         else:
             row = self._pass_rows[self._pass_index]
             if hasattr(self, "lbl_pass_meta"):
-                self.lbl_pass_meta.setText(
-                    f"《{self.current_list_name()}》 · 第 {row['seq']} 词"
-                )
-            pos_tag, clean_meaning = _extract_pos_and_meaning(row["meaning"])
-            if hasattr(self, "lbl_pass_pos"):
-                if pos_tag:
-                    self.lbl_pass_pos.setText(f"[{pos_tag}]")
-                    self.lbl_pass_pos.setVisible(True)
-                else:
-                    self.lbl_pass_pos.setVisible(False)
+                self.lbl_pass_meta.setText(f"《{self.current_list_name()}》")
 
-            self.lbl_pass_seq.setText(f"进度：{self._pass_index + 1} / {len(self._pass_rows)}")
+            self.lbl_pass_seq.setText(f"第 {row['seq']} 个")
             self.lbl_pass_kr.setText(row["korean"])
             self._revealed = False
             self._render_pass_meaning()
-
-            # 周边弱对比呈现例句与笔记
-            if hasattr(self, "box_pass_note"):
-                note = self.database.get_word_note(row["korean"])
-                note_text = (note["note"] if note else "").strip()
-                if note_text:
-                    self.lbl_pass_note.setText(f"💡 笔记与例句：{note_text}")
-                    self.box_pass_note.setVisible(True)
-                else:
-                    self.box_pass_note.setVisible(False)
 
         self._update_pass_progress()
 
@@ -1334,8 +1254,7 @@ class VocabView(QWidget):
         if self._pass_index >= len(self._pass_rows):
             return
         row = self._pass_rows[self._pass_index]
-        _, clean_meaning = _extract_pos_and_meaning(row["meaning"])
-        meaning_display = clean_meaning or row["meaning"] or "（这份词表没有释义）"
+        meaning_display = row["meaning"] or "（这份词表没有释义）"
         if self._revealed:
             restyle(self.lbl_pass_cn, "quizMeaning")
             self.lbl_pass_cn.setText(meaning_display)
@@ -1442,22 +1361,12 @@ class VocabView(QWidget):
             return
         row = self._drill_rows[self._drill_index]
         if hasattr(self, "lbl_drill_meta"):
-            self.lbl_drill_meta.setText(
-                f"《{self.current_list_name()}》 · 待专攻第 {self._drill_index + 1} / {len(self._drill_rows)} 词"
-            )
+            self.lbl_drill_meta.setText(f"《{self.current_list_name()}》")
 
-        pos_tag, clean_meaning = _extract_pos_and_meaning(row["meaning"])
-        if hasattr(self, "lbl_drill_pos"):
-            if pos_tag:
-                self.lbl_drill_pos.setText(f"[{pos_tag}]")
-                self.lbl_drill_pos.setVisible(True)
-            else:
-                self.lbl_drill_pos.setVisible(False)
-
-        state_text = "● 不认识" if row["state"] == "unknown" else "● 模糊"
+        state_text = "不认识" if row["state"] == "unknown" else "模糊"
         self.lbl_drill_seq.setText(f"第 {row['seq']} 个 · {state_text}")
         self.lbl_drill_kr.setText(row["korean"])
-        self.lbl_drill_cn.setText(clean_meaning or row["meaning"] or "（这份词表没有释义）")
+        self.lbl_drill_cn.setText(row["meaning"] or "（这份词表没有释义）")
 
         note = self.database.get_word_note(row["korean"])
         self.txt_drill_notes.blockSignals(True)

@@ -55,6 +55,7 @@ AB 点、语速与曲目状态。`MainWindow.closeEvent` 调它，`hideEvent`（
 
 import os
 import re
+import shlex
 import time
 from datetime import datetime
 
@@ -120,6 +121,8 @@ SPEEDS = (("0.5×", 0.5), ("0.75×", 0.75), ("1.0×", 1.0), ("1.25×", 1.25), ("
 MIX_ORIGINAL_GAIN = 0.75
 
 COLLAPSED_KEY = "shadowing_list_collapsed"
+SPLITTER_WIDTHS_KEY = "shadowing_splitter_widths"
+PDF_SPLITTER_WIDTHS_KEY = "shadowing_pdf_splitter_widths"
 
 # 收起/展开左栏的圆角小按钮（嵌在准备条最左边）。
 # 收起是**整块隐藏**左栏，不把它压成细条。
@@ -217,6 +220,52 @@ class ClickableSlider(QSlider):
         super().mousePressEvent(event)
 
 
+class HandPdfView(QPdfView):
+    zoom_requested = Signal(int)
+    focused = Signal()
+
+    def mousePressEvent(self, event):
+        self.focused.emit()
+        if event.button() == Qt.MouseButton.LeftButton:
+            self._dragging = True
+            self._drag_pos = event.position().toPoint()
+            self.setCursor(Qt.CursorShape.ClosedHandCursor)
+            event.accept()
+            return
+        super().mousePressEvent(event)
+
+    def mouseMoveEvent(self, event):
+        if getattr(self, "_dragging", False):
+            pos = event.position().toPoint()
+            delta = pos - self._drag_pos
+            self._drag_pos = pos
+            self.horizontalScrollBar().setValue(self.horizontalScrollBar().value() - delta.x())
+            self.verticalScrollBar().setValue(self.verticalScrollBar().value() - delta.y())
+            event.accept()
+            return
+        super().mouseMoveEvent(event)
+
+    def mouseReleaseEvent(self, event):
+        if event.button() == Qt.MouseButton.LeftButton and getattr(self, "_dragging", False):
+            self._dragging = False
+            self.setCursor(Qt.CursorShape.OpenHandCursor)
+            event.accept()
+            return
+        super().mouseReleaseEvent(event)
+
+    def enterEvent(self, event):
+        self.setCursor(Qt.CursorShape.OpenHandCursor)
+        super().enterEvent(event)
+
+    def wheelEvent(self, event):
+        if event.modifiers() & Qt.KeyboardModifier.ControlModifier:
+            self.focused.emit()
+            self.zoom_requested.emit(1 if event.angleDelta().y() > 0 else -1)
+            event.accept()
+            return
+        super().wheelEvent(event)
+
+
 class PdfPanel(QFrame):
     """一份 PDF 的阅读面板（4.3 的对照区）。
 
@@ -226,6 +275,8 @@ class PdfPanel(QFrame):
 
     choose_requested = Signal()
     page_changed = Signal()
+    focused = Signal()
+    zoom_requested = Signal(int)
 
     def __init__(self, heading, empty_hint, parent=None):
         super().__init__(parent)
@@ -260,7 +311,7 @@ class PdfPanel(QFrame):
         head.addWidget(self.btn_choose)
         box.addLayout(head)
 
-        self.view = QPdfView()
+        self.view = HandPdfView()
         self.view.setObjectName("pdfView")
         self.view.setPageMode(QPdfView.PageMode.MultiPage)
         self.view.setZoomMode(QPdfView.ZoomMode.FitToWidth)
@@ -286,6 +337,8 @@ class PdfPanel(QFrame):
         self.btn_open.clicked.connect(self.open_externally)
         # 翻页就记：`currentPage` 是 0 起的，存进库时 +1（给人看的页码从 1 开始）
         self.view.pageNavigator().currentPageChanged.connect(self._on_page_changed)
+        self.view.focused.connect(self.focused.emit)
+        self.view.zoom_requested.connect(self.zoom_requested.emit)
 
     def path(self):
         return self._path
@@ -355,7 +408,7 @@ class PdfPanel(QFrame):
             QDesktopServices.openUrl(QUrl.fromLocalFile(self._path))
 
     def set_zoom(self, factor):
-        """`None` = 适合宽度。两份 PDF 用同一个缩放，左右对照时行才在同一个高度上。"""
+        self._zoom = factor
         if factor is None:
             self.view.setZoomMode(QPdfView.ZoomMode.FitToWidth)
             return
@@ -378,10 +431,11 @@ class FFmpegWorker(QThread):
     finished = Signal(bool, str)   # 成功?, 成功给输出路径 / 失败给原因
     progress = Signal(str)
 
-    def __init__(self, args, output, parent=None):
+    def __init__(self, args, output, diagnostic_log=None, parent=None):
         super().__init__(parent)
         self.args = list(args)
         self.output = output
+        self.diagnostic_log = diagnostic_log
         self._process = None
         self._cancelled = False
 
@@ -395,6 +449,7 @@ class FFmpegWorker(QThread):
         import subprocess
 
         last_lines = []
+        all_lines = []
         try:
             self._process = subprocess.Popen(
                 ["ffmpeg", *self.args],
@@ -409,8 +464,9 @@ class FFmpegWorker(QThread):
             for line in self._process.stdout:
                 line_str = line.strip()
                 if line_str:
+                    all_lines.append(line_str)
                     last_lines.append(line_str)
-                    if len(last_lines) > 8:
+                    if len(last_lines) > 12:
                         last_lines.pop(0)
                 self.progress.emit(line_str)
             self._process.wait()
@@ -425,7 +481,15 @@ class FFmpegWorker(QThread):
             return
 
         if self._cancelled:
-            return   # 关窗口时被取消：不发信号，接收方可能已经拆了
+            return
+        if self.diagnostic_log:
+            try:
+                with open(self.diagnostic_log, "a", encoding="utf-8") as log:
+                    log.write("\nFFmpeg exit_code: %s\n" % self._process.returncode)
+                    log.write("\n".join(all_lines))
+                    log.write("\n")
+            except OSError:
+                pass
         ok = self._process.returncode == 0 and os.path.isfile(self.output)
         if not ok and os.path.isfile(self.output):
             try:
@@ -460,8 +524,10 @@ class ShadowingView(QWidget):
         self._banner_action = None
         self._closed = False
         self._collapsed = False
-        self.pdf_zoom = None                  # None = 适合宽度
-        self._loading_pages = False           # 正在按记忆恢复页码，期间的翻页信号忽略
+        self._active_pdf = None
+        self.pdf_zoom = None
+        self._loading_pages = False
+        self._restoring_splitter_widths = False           # 正在按记忆恢复页码，期间的翻页信号忽略
 
         self._page_timer = QTimer(self)
         self._page_timer.setSingleShot(True)
@@ -482,7 +548,10 @@ class ShadowingView(QWidget):
         self.audio_input = None
         self.recorder = None
         self._recording = False
+        self._record_session_active = False
         self._record_seconds = 0
+        self._record_paused_at = None
+        self._record_paused_total = 0.0
         self._last_recording = ""
         # 录音期间"原音实际放到哪"的轨迹（见 _mix_recording）。每一项是一段：
         # {start, end, path, pos, speed} = 录音内时间轴上的起止秒数、原音文件、
@@ -540,7 +609,9 @@ class ShadowingView(QWidget):
         self.splitter.setSizes([300, 820])
         self.splitter.setStretchFactor(1, 1)
         self.splitter.setCollapsible(0, True)
+        self.splitter.splitterMoved.connect(self._save_main_splitter_width)
         layout.addWidget(self.splitter, 1)
+        QTimer.singleShot(0, self._restore_main_splitter_width)
 
     def _build_prepare_bar(self):
         """材料准备条。**只留真正要点的东西**：导入、转换，右侧是 PDF 缩放。
@@ -594,7 +665,7 @@ class ShadowingView(QWidget):
             button.setFixedWidth(36)
         self.btn_zoom_fit.setObjectName("iconButton")
         self.btn_zoom_fit.setFixedWidth(60)
-        self.btn_zoom_fit.setToolTip("两份 PDF 都缩放到适合面板宽度")
+        self.btn_zoom_fit.setToolTip("当前 PDF 缩放到适合面板宽度")
         self.lbl_zoom = QLabel("适宽")
         self.lbl_zoom.setObjectName("faint")
         self.lbl_zoom.setFixedWidth(56)
@@ -703,9 +774,17 @@ class ShadowingView(QWidget):
         pdf_split.setObjectName("shadowingSplitter")
         self.kr_pdf = PdfPanel("原文", "这份播放列表还没有配原文 PDF")
         self.cn_pdf = PdfPanel("解析", "这份播放列表还没有配解析 PDF")
+        self._active_pdf = self.kr_pdf
+        self.kr_pdf.focused.connect(lambda: self._set_active_pdf(self.kr_pdf))
+        self.cn_pdf.focused.connect(lambda: self._set_active_pdf(self.cn_pdf))
+        self.kr_pdf.zoom_requested.connect(lambda d: self.step_zoom(d, self.kr_pdf))
+        self.cn_pdf.zoom_requested.connect(lambda d: self.step_zoom(d, self.cn_pdf))
         pdf_split.addWidget(self.kr_pdf)
         pdf_split.addWidget(self.cn_pdf)
         pdf_split.setSizes([520, 520])
+        self._pdf_splitter = pdf_split
+        pdf_split.splitterMoved.connect(lambda pos, index, splitter=pdf_split: self._save_pdf_splitter_width(splitter))
+        QTimer.singleShot(0, lambda splitter=pdf_split: self._restore_pdf_splitter_width(splitter))
         # 上边不再有独立的一行：准备条就是这一栏的顶，和左栏齐平（验收意见）
         box.addWidget(pdf_split, 1)
 
@@ -825,7 +904,7 @@ class ShadowingView(QWidget):
         divider.setFrameShadow(QFrame.Plain)
         outer.addWidget(divider)
 
-        # 录音区按自身宽度就位（固定宽度 145px，避免压缩播放控制区）
+        # 录音区给暂停按钮留出明确空间，避免和计时挤在一起
         outer.addWidget(self._build_recorder_panel())
         return card
 
@@ -847,11 +926,19 @@ class ShadowingView(QWidget):
         self.btn_record.setCursor(Qt.PointingHandCursor)
         self.btn_record.setFocusPolicy(Qt.NoFocus)
         self.btn_record.setMinimumWidth(80)
-        self.btn_record.setFixedHeight(28)
+        self.btn_record.setFixedHeight(30)
         self.btn_record.setToolTip(
             "跟着原音念，录成一条音轨存到设置里指定的位置。带耳机效果最好。"
         )
         row.addWidget(self.btn_record)
+
+        self.btn_pause_record = QPushButton("Ⅱ 暂停")
+        self.btn_pause_record.setObjectName("iconButton")
+        self.btn_pause_record.setMinimumWidth(72)
+        self.btn_pause_record.setFixedHeight(30)
+        self.btn_pause_record.setEnabled(False)
+        self.btn_pause_record.setToolTip("暂停/继续录音")
+        row.addWidget(self.btn_pause_record)
 
         self.lbl_record_time = QLabel("00:00")
         self.lbl_record_time.setObjectName("muted")
@@ -865,7 +952,7 @@ class ShadowingView(QWidget):
         box.addWidget(self.lbl_recording)
 
         box.addStretch()
-        panel.setFixedWidth(145)
+        panel.setFixedWidth(225)
         return panel
 
     # ==================================================================
@@ -911,6 +998,7 @@ class ShadowingView(QWidget):
         self.slider.sliderMoved.connect(self._seek)
 
         self.btn_record.clicked.connect(self.toggle_recording)
+        self.btn_pause_record.clicked.connect(self.toggle_pause_recording)
 
         self._setup_shortcuts()
 
@@ -1137,11 +1225,69 @@ class ShadowingView(QWidget):
             self.list_panel.hide()
         else:
             self.list_panel.show()
-            self.splitter.setSizes([getattr(self, "_expanded_width", 300), 820])
+            width = getattr(self, "_expanded_width", None)
+            if width is None:
+                width = self._load_width_map(SPLITTER_WIDTHS_KEY).get("main")
+            if not isinstance(width, int): width = 300
+            total = sum(self.splitter.sizes()) or 1120
+            width = max(EXPANDED_MIN_WIDTH, min(width, max(EXPANDED_MIN_WIDTH, total - 240)))
+            self._restoring_splitter_widths = True
+            self.splitter.setSizes([width, max(1, total - width)])
+            self._restoring_splitter_widths = False
         self.btn_toggle_list.setIcon(icon("chevron-right" if self._collapsed else "chevron-left"))
         self.btn_toggle_list.setToolTip(
             "展开播放列表" if self._collapsed else "收起播放列表，把宽度让给 PDF（D16）"
         )
+
+    def _load_width_map(self, key):
+        raw = self.database.get_setting(key, "")
+        if not raw: return {}
+        try:
+            import json
+            value = json.loads(raw)
+            return value if isinstance(value, dict) else {}
+        except (TypeError, ValueError): return {}
+
+    def _save_width_map(self, key, values):
+        import json
+        self.database.set_setting(key, json.dumps(values, ensure_ascii=False))
+
+    def _save_main_splitter_width(self, _pos, _index):
+        if self._restoring_splitter_widths or self._collapsed: return
+        sizes = self.splitter.sizes()
+        if not sizes or sizes[0] < EXPANDED_MIN_WIDTH: return
+        values = self._load_width_map(SPLITTER_WIDTHS_KEY)
+        values["main"] = int(sizes[0])
+        self._save_width_map(SPLITTER_WIDTHS_KEY, values)
+
+    def _restore_main_splitter_width(self):
+        width = self._load_width_map(SPLITTER_WIDTHS_KEY).get("main")
+        if not isinstance(width, int): return
+        total = sum(self.splitter.sizes())
+        if total <= 0: return
+        width = max(EXPANDED_MIN_WIDTH, min(width, max(EXPANDED_MIN_WIDTH, total - 240)))
+        self._restoring_splitter_widths = True
+        self.splitter.setSizes([width, max(1, total - width)])
+        self._restoring_splitter_widths = False
+        self._expanded_width = width
+
+    def _save_pdf_splitter_width(self, splitter):
+        if self._restoring_splitter_widths: return
+        sizes = splitter.sizes()
+        if len(sizes) < 2 or sizes[0] < 240 or sizes[1] < 240: return
+        values = self._load_width_map(PDF_SPLITTER_WIDTHS_KEY)
+        values["shadowing_pdf"] = int(sizes[0])
+        self._save_width_map(PDF_SPLITTER_WIDTHS_KEY, values)
+
+    def _restore_pdf_splitter_width(self, splitter):
+        width = self._load_width_map(PDF_SPLITTER_WIDTHS_KEY).get("shadowing_pdf")
+        if not isinstance(width, int): return
+        total = sum(splitter.sizes())
+        if total <= 0: return
+        width = max(240, min(width, max(240, total - 240)))
+        self._restoring_splitter_widths = True
+        splitter.setSizes([width, max(1, total - width)])
+        self._restoring_splitter_widths = False
 
     # ==================================================================
     # 对照 PDF（挂在播放列表上）
@@ -1207,25 +1353,32 @@ class ShadowingView(QWidget):
 
     # ---- 缩放 ----
 
-    def _apply_zoom(self):
-        for panel in (self.kr_pdf, self.cn_pdf):
-            panel.set_zoom(self.pdf_zoom)
+    def _set_active_pdf(self, panel):
+        self._active_pdf = panel
+        self.pdf_zoom = getattr(panel, "_zoom", None)
         self.lbl_zoom.setText("适宽" if self.pdf_zoom is None else f"{round(self.pdf_zoom * 100)}%")
 
-    def step_zoom(self, direction):
-        """整档放大/缩小。**从"适宽"起跳时先落到 100%**，再按档走——
-        否则第一次点缩小会跳到一个说不清的倍数上。"""
-        if self.pdf_zoom is None:
-            self.pdf_zoom = 1.0 if direction > 0 else 1.0
-        else:
-            index = min(range(len(ZOOM_STEPS)), key=lambda i: abs(ZOOM_STEPS[i] - self.pdf_zoom))
-            index = max(0, min(len(ZOOM_STEPS) - 1, index + direction))
-            self.pdf_zoom = ZOOM_STEPS[index]
-        self._apply_zoom()
+    def _apply_zoom(self, panel=None):
+        panel = panel or self._active_pdf or self.kr_pdf
+        panel.set_zoom(getattr(panel, "_zoom", None))
+        self.pdf_zoom = getattr(panel, "_zoom", None)
+        self.lbl_zoom.setText("适宽" if self.pdf_zoom is None else f"{round(self.pdf_zoom * 100)}%")
 
-    def fit_pdf_width(self):
-        self.pdf_zoom = None
-        self._apply_zoom()
+    def step_zoom(self, direction, panel=None):
+        panel = panel or self._active_pdf or self.kr_pdf
+        current = getattr(panel, "_zoom", None)
+        if current is None:
+            current = 1.0
+        else:
+            index = min(range(len(ZOOM_STEPS)), key=lambda i: abs(ZOOM_STEPS[i] - current))
+            current = ZOOM_STEPS[max(0, min(len(ZOOM_STEPS) - 1, index + direction))]
+        panel._zoom = current
+        self._apply_zoom(panel)
+
+    def fit_pdf_width(self, panel=None):
+        panel = panel or self._active_pdf or self.kr_pdf
+        panel._zoom = None
+        self._apply_zoom(panel)
 
     # ==================================================================
     # 导入
@@ -1362,12 +1515,7 @@ class ShadowingView(QWidget):
         self.last_position = 0
         self._seek_target = None
         self.player.setSource(QUrl.fromLocalFile(absolute))
-        self._pending_position = progress["position_ms"] or None
-        if self._pending_position:
-            # 载入时定位到上次的位置（流程 C 第 3 条）。
-            # 此时媒体还没解码完，`setPosition` 未必立刻生效，所以同时记下来，
-            # 等 `_on_media_status` 报 LoadedMedia 时再落一次。
-            self._seek(self._pending_position)
+        self._pending_position = None
         if progress["status"] != "done":
             self.database.set_track_status(track_id, "listening")
         self.database.set_playback_state(self.playlist_id, track_id)
@@ -1785,12 +1933,24 @@ class ShadowingView(QWidget):
         return name
 
     def toggle_recording(self):
-        if self._recording:
+        # “暂停”状态仍属于同一次录音会话，不能因为 _recording 仍为 True
+        # 而把停止按钮和暂停逻辑混在一起。
+        if self._record_session_active:
             self.stop_recording()
         else:
             self.start_recording()
 
+    def toggle_pause_recording(self):
+        if self.recorder is None or not self._record_session_active:
+            return
+        state = self.recorder.recorderState()
+        if state == QMediaRecorder.RecorderState.RecordingState:
+            self.recorder.pause()
+        elif state == QMediaRecorder.RecorderState.PausedState:
+            self.recorder.record()
+
     def start_recording(self):
+
         """按一下开始录。**不动原音的播放状态**——跟读是"原音在放、我在跟"，
         录音按钮顺手把原音停了或开了都会打断这件事。
 
@@ -1823,7 +1983,10 @@ class ShadowingView(QWidget):
         # 省下来的那点体积不值得冒这个险。
         self.recorder.setOutputLocation(QUrl.fromLocalFile(path))
 
+        self._record_session_active = True
         self._record_seconds = 0
+        self._record_paused_at = None
+        self._record_paused_total = 0.0
         self.lbl_record_time.setText(clock(0))
         # 轨迹从零开始。第一条等录音状态真的翻到 Recording 再记（见
         # _on_recorder_state）——按下按钮到文件真的开始写之间还有一点延迟。
@@ -1836,7 +1999,7 @@ class ShadowingView(QWidget):
         self.recorder.record()
 
     def stop_recording(self):
-        if self.recorder is not None:
+        if self.recorder is not None and self._record_session_active:
             self.recorder.stop()
 
     def _record_tick(self):
@@ -1845,22 +2008,42 @@ class ShadowingView(QWidget):
 
     def _on_recorder_state(self, state):
         recording = state == QMediaRecorder.RecorderState.RecordingState
+        paused = state == QMediaRecorder.RecorderState.PausedState
+        active = recording or paused
+        was_active = self._recording
         self._recording = recording
+
+        now = time.monotonic()
         if recording:
-            self._record_seconds = 0
-            self.lbl_record_time.setText(clock(0))
+            if not was_active:
+                self._record_seconds = 0
+                self._record_paused_at = None
+                self._record_paused_total = 0.0
+                self.lbl_record_time.setText(clock(0))
+                self._rec_started = now
+                self._rec_segments = []
+            elif self._record_paused_at is not None:
+                self._record_paused_total += max(0.0, now - self._record_paused_at)
+                self._record_paused_at = None
             self._record_timer.start()
-            # 文件真的开始写了：时间轴原点就是这一刻，与麦克风那一路同源
-            self._rec_started = time.monotonic()
-            self._rec_segments = []
             self._rec_open_segment()
+        elif paused:
+            self._record_timer.stop()
+            if self._record_paused_at is None: self._record_paused_at = now
+            self._rec_close_segment()
         else:
             self._record_timer.stop()
+            if self._record_paused_at is not None:
+                self._record_paused_total += max(0.0, now - self._record_paused_at)
+                self._record_paused_at = None
             self._rec_close_segment()
-        # 红色 = 正在录。**状态色永远伴随文字**（"● 录音" → "■ 停止"），不靠颜色单独表意
-        restyle(self.btn_record, "recordButtonActive" if recording else "recordButton")
-        self.btn_record.setText("■ 停止" if recording else "● 录音")
-        if not recording:
+
+        restyle(self.btn_record, "recordButtonActive" if active else "recordButton")
+        self.btn_record.setText("■ 停止" if active else "● 录音")
+        self.btn_pause_record.setEnabled(active)
+        self.btn_pause_record.setText("Ⅱ 继续" if paused else "Ⅱ 暂停")
+        if not active and self._record_session_active:
+            self._record_session_active = False
             self._finish_recording()
 
     def _finish_recording(self):
@@ -1897,10 +2080,12 @@ class ShadowingView(QWidget):
     # ---- 原音轨迹：只在录音期间记，录完据此合成 ----
 
     def _rec_elapsed(self):
-        """录音内部的时间轴（秒）。与麦克风那一路音频同一个原点。"""
-        if self._rec_started is None:
-            return 0.0
-        return max(0.0, time.monotonic() - self._rec_started)
+        """录音内部的时间轴（秒），不包含暂停期间。"""
+        if self._rec_started is None: return 0.0
+        paused = self._record_paused_total
+        if self._record_paused_at is not None:
+            paused += max(0.0, time.monotonic() - self._record_paused_at)
+        return max(0.0, time.monotonic() - self._rec_started - paused)
 
     def _rec_source_path(self):
         """当前曲目在音频库里的绝对路径；没有可播的文件就 `None`。"""
@@ -2042,7 +2227,17 @@ class ShadowingView(QWidget):
         self.lbl_recording.setText(
             f"正在合成原音…（{len(valid_segments)} 段 · {audio.human_size(size)} 的人声）"
         )
-        self._mix_worker = FFmpegWorker(args, mixed)
+        diagnostic_log = mixed + ".ffmpeg.log"
+        self._mix_diagnostic_log = diagnostic_log
+        try:
+            with open(diagnostic_log, "w", encoding="utf-8") as log:
+                log.write(f"recording: {location}\nrecording_size: {size}\nsegments: {len(valid_segments)}\n")
+                for index, seg in enumerate(valid_segments, start=1):
+                    log.write(f"segment {index}: start={seg['start']:.3f} end={seg['end']:.3f} wall={seg['end']-seg['start']:.3f} pos={seg['pos']:.3f} speed={seg['speed']:.4f} path={seg['path']}\n")
+                log.write(f"command: ffmpeg {shlex.join(args)}\n")
+        except OSError:
+            diagnostic_log = None
+        self._mix_worker = FFmpegWorker(args, mixed, diagnostic_log=diagnostic_log)
         self._mix_worker.finished.connect(self._on_mix_finished)
         self._mix_worker.start()
 
@@ -2115,7 +2310,11 @@ class ShadowingView(QWidget):
 
     def _on_mix_finished(self, success, result):
         raw = self._last_recording
+        diagnostic_log = getattr(self, "_mix_diagnostic_log", None)
         if not success:
+            detail = str(result)
+            if diagnostic_log and os.path.isfile(diagnostic_log):
+                detail = f"{detail}；诊断日志：{diagnostic_log}"
             if "未检测到 ffmpeg" in str(result):
                 self._show_banner(
                     "warning",
@@ -2123,12 +2322,16 @@ class ShadowingView(QWidget):
                     "录音会自动把原音一起混进去。",
                 )
             else:
-                self._show_banner("warning", f"原音合成失败：{result}。人声录音已完整保存。")
+                self._show_banner("warning", f"原音合成失败：{detail}。人声录音已完整保存。")
             if raw and os.path.isfile(raw):
                 self.lbl_recording.setText(f"已保存 {os.path.basename(raw)}（仅人声）")
                 self.lbl_recording.setToolTip(raw)
             return
 
+        if diagnostic_log and os.path.isfile(diagnostic_log):
+            try: os.remove(diagnostic_log)
+            except OSError: pass
+        self._mix_diagnostic_log = None
         final_path = raw
         if raw and os.path.isfile(raw):
             self._warn_if_silent(raw, os.path.getsize(raw))
@@ -2184,6 +2387,9 @@ class ShadowingView(QWidget):
 
     def _on_recorder_error(self, error, message):
         self._record_timer.stop()
+        self._record_paused_at = None
+        self._record_paused_total = 0.0
+        self._record_session_active = False
         self._recording = False
         restyle(self.btn_record, "recordButton")
         self.btn_record.setText("● 录音")
@@ -2268,7 +2474,7 @@ class ShadowingView(QWidget):
                 self.loop_count = 0
             self.database.save_track_progress(
                 self.track_id,
-                position_ms=self.player.position() if self.player.source().isValid() else None,
+                position_ms=None,
                 speed=dict(SPEEDS).get(self.combo_speed.currentText(), 1.0),
             )
             self._update_track_meta()

@@ -757,6 +757,8 @@ QTableWidget::item:selected, QTableView::item:selected {{
 QHeaderView {{
     background: transparent;
     border: none;
+    border-top-left-radius: 7px;
+    border-top-right-radius: 7px;
 }}
 
 QHeaderView::section {{
@@ -769,10 +771,18 @@ QHeaderView::section {{
     font-weight: 500;
 }}
 
+QHeaderView::section:first {{
+    border-top-left-radius: 7px;
+}}
+
+QHeaderView::section:last {{
+    border-top-right-radius: 7px;
+}}
+
 QHeaderView::section:hover {{ color: #2A322D; }}
 QHeaderView::section:checked {{ color: #2A322D; font-weight: 500; }}
 
-QTableCornerButton::section {{ background: #FFFFFF; border: none; }}
+QTableCornerButton::section {{ background: transparent; border: none; }}
 
 /* ---------- 滑块（P2 进度条） ---------- */
 
@@ -796,10 +806,15 @@ QSlider::handle:horizontal:hover {{ background: #185844; }}
 
 /* ---------- 分隔条 ---------- */
 
-QSplitter::handle {{ background: #DDE5DE; }}
-QSplitter::handle:horizontal {{ width: 1px; }}
-QSplitter::handle:vertical {{ height: 1px; }}
-QSplitter::handle:hover, QSplitter::handle:pressed {{ background: #C6D2C9; }}
+QSplitter::handle {{
+    background: transparent;
+}}
+QSplitter::handle:horizontal {{
+    width: 8px;
+}}
+QSplitter::handle:vertical {{
+    height: 8px;
+}}
 
 /* ---------- 日期输入（P5 考试日期） ---------- */
 /* 复用与 QComboBox 完全相同的取值，不引入新 token */
@@ -946,41 +961,6 @@ QLabel#vocabCardMeta {{
 QLabel#vocabCardProgress {{
     color: #98A29C;
     font-size: 12px;
-}}
-
-QLabel#vocabCardPos {{
-    color: #646E68;
-    background: #F0F4F1;
-    border: 1px solid #E1E8E3;
-    border-radius: 4px;
-    padding: 2px 8px;
-    font-size: 12px;
-    font-weight: 500;
-}}
-
-QFrame#vocabCardNoteBox {{
-    background: #F7FAF8;
-    border-left: 3px solid #CBD5CF;
-    border-radius: 4px;
-    margin: 4px 16px;
-}}
-
-QLabel#vocabCardNoteText {{
-    color: #646E68;
-    font-size: 13px;
-}}
-
-QFrame#vocabDrillNoteBox {{
-    background: #F9FAF8;
-    border: 1px solid #E1E8E3;
-    border-radius: 6px;
-    margin: 4px 8px;
-}}
-
-QLabel#vocabCardNoteHeader {{
-    color: #98A29C;
-    font-size: 11px;
-    font-weight: 500;
 }}
 
 QLabel#vocabCardHint {{

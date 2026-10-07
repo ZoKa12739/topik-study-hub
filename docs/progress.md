@@ -528,23 +528,36 @@ schema 仍为 2、`word_notes` 仍为 49 行）。
   - `ui/planner_view.py`（重写）、`ui/vocab_view.py`、`ui/main_window.py`、`ui/theme.py`
   - `CLAUDE.md`、`docs/PRODUCT_SPEC.md`（v1.10）、`task_plan.md`
 
+### 阶段 16：第 7 期收官（本周回顾、跨表专攻、Anki 导出）与 D-5 视觉/交互精修 〔2026-10-07〕
+- **状态：** complete
+- 执行的操作：
+  - **本周回顾视图与跨词表专攻、Anki 导出**：
+    - `core/database.py` 新增 `week_summary()`（周一至周日 7 日明细与汇总）、`anki_rows()`（支持待专攻 / 含笔记 / 全部已学三档范围导出 TSV）；`drill_queue(list_id=None)` 在 `VocabView` 中接入「全部词表」专攻模式。
+    - `ui/planner_view.py` H5 本周概览区新增 7 日条带（`_DayCell`），右上角考试倒计时升级为模块化小卡片 `QFrame#countdownCard`（突出显示 28px 加粗天数）。
+  - **D-5 视觉收口与左侧栏重塑**：
+    - `ui/main_window.py` + `ui/theme.py`：Logo 区（`#brandBar`）下方施加 `24px` 物理断层；导航列表插入不可选中的极低对比度分组标题（`学习` / `资料`，`#98A29C` 13px）；统一 16px 线性图标并建立像素级左对齐线。
+    - `ui/vocab_view.py`：过词与专攻重构为居中实体卡片 `QFrame#vocabCard`（宽 640–760px），周边低对比度展示词表名、序号、记忆进度、`[词性]` 胶囊及 `💡 笔记与例句` 微卡；专攻模式新增 `↩ 回退` 按钮（`_undo_drill`）；快捷键升级为 `Qt.WindowShortcut` 并绑定页面可见性生命周期；安装防重入 `eventFilter` 支持点击卡片空白处取消编辑框焦点与文本光标。
+  - **多模块交互缺陷修复**：
+    - `ui/shadowing_view.py`：修复空播放列表无法导入音频；移除转换视频按钮；开录时锁定参考音轨（`recorded_ref_audio_path`）并在混音失败时回退保留纯人声录音；进度条改为 `ClickableSlider` 支持点击跳转；新增打开录音目录按钮与 `{届数}届{起止题号}第{N}次.mp3` 命名规则。
+    - `ui/snippets_view.py`：修改标题时同步重命名本地磁盘文件，并调用 `database.relocate_file()` 迁移全部路径关联表。
+    - `ui/planner_view.py` / `ui/vault_view.py`：新增 `#taskDeleteButton` 与 `#zoomStepButton` 修复小尺寸按钮文字被全局 `padding` 裁切的问题。
+  - **文档与测试**：新增 `USER_CONTEXT.md`（学习时间精细化记录规范）与 `AGENTS.md`；`tests/` 92 项单元测试全部通过。
+
 ### 五问重启检查
 
 | 问题 | 答案 |
 |------|------|
-| 我在哪里？ | 第 7 期的前半做完；事件管道通了，P0 按 D1 改完 |
-| 我要去哪里？ | 本周回顾视图、Anki 导出、D-5 收口 |
-| 目标是什么？ | 让「记录 → 回顾」这一段闭环真的能被感知到 |
-| 我学到了什么？ | `shadowing_minutes` 是**一行一次冲刷**，不是一行一天——按类型合计是必须的，否则条上会出现四条「跟读 1 分钟」 |
-| 我做了什么？ | 见上。首页从「一句写死的文案」变成「今天真做了什么」 |
+| 我在哪里？ | 设计轨（D-1~D-5）与功能轨第 1–7 期（本地核心）已全部收官 |
+| 我要去哪里？ | 按需推进 `USER_CONTEXT.md`（实际学习投入时间统计）或第 8 期联网增强 |
+| 目标是什么？ | 保持本地优先、零打扰、可持续记录的 TOPIK 备考桌面工具箱 |
+| 我学到了什么？ | 小尺寸固定宽高按钮必须显式覆盖全局 QSS `padding`；Qt 全局 `eventFilter` 必须防重入并在 `destroyed` 时解绑 |
+| 我做了什么？ | 完成了第 7 期全部剩余项与 D-5 视觉/交互细节收口，并同步了全部规格文档 |
 
 ### 验证与已知未做
 
 | 项 | 说明 |
 |---|---|
-| **真的跑过的** | `compileall` + `tools/check_names.py` 通过。离屏构造过一次 `MainWindow` 并读出 P0 的每一个数（指标四张卡、记录条的分段、两张补充卡、本周概览），读的是**真库**——真库已是 v8，本轮没有 schema 变更，构造不会触发迁移。记账逻辑（按天合计、`Ctrl+Z` 退回、计数不为负、没有行时不凭空造、未知类型报错、量纲排序、老 `NULL` 单位行并进同一段）在一份**临时库**上逐条跑过，跑完脚本已删 |
-| **真实窗口观感** | 离屏无 CJK 字体，字形全是空框。**四张指标卡的密度、侧栏 300px 里「继续上次」两行的折行、记录条在三段齐全时是否仍是一行**，需要真实窗口确认 |
-| **与 H4 的一处不一致** | `PRODUCT_SPEC` 4.1 的 H4 把「今日已自动记录」列为「侧栏卡片」，而 5.3 给它的格式是一行。本期以 5.3 的格式定位置（放主列），裁定写在 4.1 |
-| **待专攻总视图** | `drill_queue(list_id=None)` 已经支持跨词表取，视图未做 |
-| **本周回顾视图 / Anki 导出 / D-5** | 第 7 期剩余 |
-| 第 8 期 | 未开始（可选） |
+| **已验证通过** | `python -m compileall -q core ui main.py`、`python tools/check_names.py`、`python -m unittest discover tests`（92 项测试 100% OK）全部通过 |
+| **第 1–7 期本地核心** | ✅ 全部完成 |
+| **学习时间精细化统计** | 需求已写入 `USER_CONTEXT.md`，待后续实施 |
+| **第 8 期（联网增强）** | 未开始（可选，按需） |

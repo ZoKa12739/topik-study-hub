@@ -14,10 +14,11 @@ This repository is version-controlled and published at <https://github.com/ZoKa1
 
 | File | Role |
 |---|---|
-| `docs/PRODUCT_SPEC.md` | **Authoritative product spec** (v1.10). Features, pages, data model, decisions D1–D16, 8-phase roadmap in ch.10 |
-| `design/DESIGN.md` | **Authoritative visual spec** (v1.4). Color/type/spacing tokens, the 10 Linear-derived rules, D-1…D-5 stages, known gotchas |
+| `docs/PRODUCT_SPEC.md` | **Authoritative product spec** (v1.11). Features, pages, data model, decisions D1–D16, 8-phase roadmap in ch.10 |
+| `design/DESIGN.md` | **Authoritative visual spec** (v1.8). Color/type/spacing tokens, the 10 Linear-derived rules, D-1…D-5 stages, known gotchas |
+| `USER_CONTEXT.md` | **Study time recording spec**. Requirements and principles for active study time vs app runtime tracking |
 | `docs/Toolkit_Design_Proposal.md` | The original outline. Historical — superseded by `PRODUCT_SPEC.md` |
-| `docs/task_plan.md` / `docs/findings.md` / `docs/progress.md` | Session logs from the first work session. **Stale before 2026-10-06** — treat as history, not plan |
+| `docs/task_plan.md` / `docs/findings.md` / `docs/progress.md` | Session logs and milestone records |
 
 When the code and a plan disagree, the plans are usually right about *intent* and the code about *current state*; fix whichever is wrong and say which.
 
@@ -28,7 +29,7 @@ pip install -r requirements.txt   # PySide6, PyMuPDF, ffmpeg-python, schedule
 python main.py                    # launch the app
 ```
 
-There is no test suite. Three checks, in increasing order of what they catch:
+Three quick checks, in increasing order of what they catch (plus `python -m unittest discover tests` for the 92-test suite covering P0 metrics, weekly review, and Anki export):
 
 ```powershell
 python -m compileall -q core ui main.py          # syntax only
@@ -73,7 +74,7 @@ sync waits until the owner asks for it or a big phase closes.
 
 The one exception: `QFontDatabase.addApplicationFontFromData` works offscreen, so `register_fonts()` can be verified programmatically.
 
-External binaries invoked via `subprocess`, required on `PATH`: **ffmpeg** (MKV/MP4 → MP3). **Tesseract is no longer used** — the OCR paths were removed; see *OCR was removed* below.
+External binaries invoked via `subprocess`, required on `PATH`: **ffmpeg** (shadowing vocal + reference audio mixing via `amix`). **Tesseract is no longer used** — the OCR paths were removed; see *OCR was removed* below.
 
 ## Architecture
 

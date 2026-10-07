@@ -43,9 +43,12 @@ from core.config import (
     DATA_DIR,
     DEFAULT_EXAM_DATE,
     DEFAULT_EXAM_LABEL,
+    DEFAULT_TTS_MODE,
+    DEFAULT_TTS_VOICE,
     RECORDINGS_DIR,
     SCHEMA_VERSION,
     SNIPPETS_DIR,
+    TTS_DIR,
     detect_material_root,
     dir_size,
     normalize_path,
@@ -666,6 +669,9 @@ class StudyDatabase:
             "exam_label": DEFAULT_EXAM_LABEL,
             "last_indexed_at": "",
             "onboarded": "0",
+            "tts_mode": DEFAULT_TTS_MODE,
+            "tts_voice": DEFAULT_TTS_VOICE,
+            "tts_auto_play": "0",
         }.items():
             self.connection.execute(
                 "INSERT OR IGNORE INTO settings (key, value) VALUES (?, ?)", (key, value)
@@ -733,6 +739,30 @@ class StudyDatabase:
 
     def set_audio_device(self, kind, description):
         self.set_setting(f"audio_{kind}_device", description or "")
+
+    def get_tts_mode(self):
+        """单词发音模式：`online`（联网优先 + 本地缓存 + 离线兜底）或 `local`（仅本地）。"""
+        mode = self.get_setting("tts_mode", DEFAULT_TTS_MODE)
+        return mode if mode in ("online", "local") else DEFAULT_TTS_MODE
+
+    def set_tts_mode(self, mode):
+        self.set_setting("tts_mode", "local" if mode == "local" else "online")
+
+    def get_tts_voice(self):
+        """联网 Google TTS 语速/音色选项（`google_ko` 标准 / `google_ko_slow` 慢速）。"""
+        voice = self.get_setting("tts_voice", DEFAULT_TTS_VOICE) or DEFAULT_TTS_VOICE
+        return voice if voice in ("google_ko", "google_ko_slow") else DEFAULT_TTS_VOICE
+
+    def set_tts_voice(self, voice):
+        valid = voice if voice in ("google_ko", "google_ko_slow") else DEFAULT_TTS_VOICE
+        self.set_setting("tts_voice", valid)
+
+    def get_tts_auto_play(self):
+        """过词 / 专攻切换单词时是否自动发音。"""
+        return self.get_setting("tts_auto_play", "0") == "1"
+
+    def set_tts_auto_play(self, enabled):
+        self.set_setting("tts_auto_play", "1" if enabled else "0")
 
     def is_onboarded(self):
         return self.get_setting("onboarded", "0") == "1"
@@ -2651,6 +2681,7 @@ class StudyDatabase:
             "snippets": dir_size(SNIPPETS_DIR),
             "audio": dir_size(AUDIO_DIR),
             "recordings": dir_size(self.get_recording_dir()),
+            "tts": dir_size(TTS_DIR),
             "data_dir": str(DATA_DIR),
         }
 

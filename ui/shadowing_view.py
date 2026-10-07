@@ -558,6 +558,8 @@ class ShadowingView(QWidget):
         # 原音内部的起点秒数、当时的语速。
         self._rec_segments = []
         self._rec_started = None              # 录音真正开始的那一刻（monotonic 秒）
+        self._rec_playlist_text = ""          # 录音按下时的播放列表名
+        self._rec_initial_title = ""          # 录音按下时的当前曲目名（未放原音时兜底）
         self._setting_speed = False           # 程序在按曲目恢复语速，不是用户在改
         self._mix_worker = None
         self._record_timer = QTimer(self)
@@ -1864,24 +1866,98 @@ class ShadowingView(QWidget):
         if not QDesktopServices.openUrl(QUrl.fromLocalFile(folder)):
             self._show_banner("warning", f"无法打开录音文件夹：{folder}")
 
-    def _generate_recording_filename(self, folder, extension):
+    def _extract_track_range(self, segments=None):
+        """从本次录音期间实际播放过的曲目提取题号或起止题号区间（如 `25-32` 或 `25`）。
+
+        - 优先取有效播放时长 >= 0.15s 的轨迹段；若无则退取全部轨迹段；
+          若整场未播放原音（纯录人声），回退取按下录音时或当前选中的曲目。
+        - 曲目末尾数字即题号（如 `2-01.mp3` -> `1`、`2-25.mp3` -> `25`、`01.mp3` -> `1`）；
+          若整场只播了 1 个本身就是区间名的文件（如 `1-12.mp3`）则保留 `1-12`。
+        - 含有正题（>=1）时自动忽略 `00` 导读轨（如从 `2-00` 播到 `2-12` 记为 `1-12`）。
+        """
+        titles = []
+        if segments:
+            valid = [
+                seg.get("title") or os.path.basename(seg.get("path") or "")
+                for seg in segments
+                if (float(seg.get("end") or 0.0) - float(seg.get("start") or 0.0)) >= 0.15
+                and (seg.get("title") or seg.get("path"))
+            ]
+            if not valid:
+                valid = [
+                    seg.get("title") or os.path.basename(seg.get("path") or "")
+                    for seg in segments
+                    if (seg.get("title") or seg.get("path"))
+                ]
+            titles.extend(valid)
+
+        if not titles:
+            fallback = self._rec_initial_title
+            if not fallback:
+                item = self._current_item()
+                fallback = item.get("title", "") if item else ""
+            if fallback:
+                titles.append(fallback)
+
+        stems = [
+            os.path.splitext(t)[0].strip()
+            for t in titles
+            if t and os.path.splitext(t)[0].strip()
+        ]
+        if not stems:
+            return ""
+
+        unique_stems = list(dict.fromkeys(stems))
+
+        # 若整场只播了 1 首且文件名本身形如 "1-12" / "13-24"，区分是"届/等级前缀-题号"（如 2-25）
+        # 还是本身就是合并区间文件（如 1-12.mp3）：
+        if len(unique_stems) == 1:
+            single = unique_stems[0]
+            m = re.match(r"^(\d+)\s*-\s*(\d+)$", single)
+            if m:
+                prefix_str, second_str = m.group(1), m.group(2)
+                prefix_token = f"{prefix_str}-"
+                shared_prefix_count = sum(
+                    1 for row in (self._items or [])
+                    if os.path.splitext(row.get("title") or "")[0].strip().startswith(prefix_token)
+                )
+                is_deck_prefix = shared_prefix_count >= 2 or second_str.startswith("0")
+                if not is_deck_prefix and int(prefix_str) < int(second_str):
+                    return f"{int(prefix_str)}-{int(second_str)}"
+
+        q_nums = []
+        for stem in unique_stems:
+            nums = re.findall(r"\d+", stem)
+            if nums:
+                q_nums.append(int(nums[-1]))
+
+        if q_nums:
+            if any(n >= 1 for n in q_nums):
+                q_nums = [n for n in q_nums if n >= 1]
+            low, high = min(q_nums), max(q_nums)
+            return f"{low}" if low == high else f"{low}-{high}"
+
+        if len(unique_stems) == 1:
+            return safe_stem(unique_stems[0], "")
+        return safe_stem(f"{unique_stems[0]}-{unique_stems[-1]}", "")
+
+    def _generate_recording_filename(self, folder, extension, segments=None, exclude_path=None):
         """按照业务规范生成录音文件名。
 
-        规则示例：“影子跟读96届 13-24第5次.m4a”
-        格式组成：影子跟读 + [播放列表名] + 空格 + [曲目标题] + 第[N]次 + 扩展名。
-        自动遍历历史录音目录（包含归档等子目录），计算当前列表与曲目的下一个序号 N。
+        规则示例：“影子跟读96届 25-32第13次.m4a”
+        格式组成：影子跟读 + [播放列表届数] + 空格 + [起止题号/单题号] + 第[全局总序号N]次 + 扩展名。
+        自动遍历历史录音目录（包含归档等全部子目录）所有 `影子跟读...第N次` 文件，计算全局下一个序号 N。
         """
-        playlist_text = self.combo_playlist.currentText().strip() if self.combo_playlist.count() > 0 else ""
+        playlist_text = self._rec_playlist_text
+        if not playlist_text and self.combo_playlist.count() > 0:
+            playlist_text = self.combo_playlist.currentText().strip()
         if playlist_text:
             playlist_norm = re.sub(r"^(\d+)\s*讲$", r"\1届", playlist_text)
             playlist_clean = safe_stem(playlist_norm, "")
         else:
             playlist_clean = ""
 
-        item = self._current_item()
-        track_title = item.get("title", "") if item else ""
-        track_stem = os.path.splitext(track_title)[0] if track_title else ""
-        track_clean = safe_stem(track_stem, "")
+        track_clean = self._extract_track_range(segments)
 
         if playlist_clean and track_clean:
             base = f"影子跟读{playlist_clean} {track_clean}"
@@ -1892,28 +1968,21 @@ class ShadowingView(QWidget):
         else:
             base = "影子跟读"
 
-        # 扫描历史目录（含子目录如归档）提取最大已有录音序号
-        pl_chars = re.sub(r"\s+", "", playlist_clean) if playlist_clean else ""
-        tr_chars = re.sub(r"\s+", "", track_clean) if track_clean else ""
-        pl_pat = r"\s*".join(re.escape(c) for c in pl_chars) if pl_chars else ""
-        tr_pat = r"\s*".join(re.escape(c) for c in tr_chars) if tr_chars else ""
-
-        if pl_pat and tr_pat:
-            pattern = re.compile(rf"^影子跟读\s*{pl_pat}\s+{tr_pat}\s*第(\d+)次", re.IGNORECASE)
-        elif pl_pat:
-            pattern = re.compile(rf"^影子跟读\s*{pl_pat}\s*第(\d+)次", re.IGNORECASE)
-        elif tr_pat:
-            pattern = re.compile(rf"^影子跟读\s*{tr_pat}\s*第(\d+)次", re.IGNORECASE)
-        else:
-            pattern = re.compile(r"^影子跟读\s*第(\d+)次", re.IGNORECASE)
+        # 扫描历史目录（含归档等所有子目录）提取全局最大已有录音序号 N
+        pattern = re.compile(r"^影子跟读.*第(\d+)次", re.IGNORECASE)
+        exclude_norm = os.path.normcase(os.path.abspath(exclude_path)) if exclude_path else None
 
         max_count = 0
         if os.path.isdir(folder):
             try:
-                for root, dirs, files in os.walk(folder):
+                for root, _dirs, files in os.walk(folder):
                     for fname in files:
                         if fname.startswith("."):
                             continue
+                        if exclude_norm:
+                            full_norm = os.path.normcase(os.path.abspath(os.path.join(root, fname)))
+                            if full_norm == exclude_norm:
+                                continue
                         match = pattern.search(fname)
                         if match:
                             try:
@@ -1927,7 +1996,12 @@ class ShadowingView(QWidget):
 
         count = max_count + 1
         name = f"{base}第{count}次{extension}"
-        while os.path.exists(os.path.join(folder, name)):
+        while True:
+            candidate = os.path.join(folder, name)
+            if not os.path.exists(candidate):
+                break
+            if exclude_norm and os.path.normcase(os.path.abspath(candidate)) == exclude_norm:
+                break
             count += 1
             name = f"{base}第{count}次{extension}"
         return name
@@ -1972,6 +2046,12 @@ class ShadowingView(QWidget):
             return
 
         self._setup_recorder()
+        self._rec_playlist_text = (
+            self.combo_playlist.currentText().strip() if self.combo_playlist.count() > 0 else ""
+        )
+        item = self._current_item()
+        self._rec_initial_title = item.get("title", "") if item else ""
+
         media_format, extension = preferred_audio_format()
         name = self._generate_recording_filename(folder, extension)
         path = os.path.join(folder, name)
@@ -2047,15 +2127,14 @@ class ShadowingView(QWidget):
             self._finish_recording()
 
     def _finish_recording(self):
-        """停下来之后才知道最终落在哪个文件上（`actualLocation`），把结果说给用户听。"""
+        """停下来之后才知道最终落在哪个文件上（`actualLocation`）以及整场播了哪几题，
+        据此定下最终文件名并把结果说给用户听。"""
         if self.recorder is None:
             return
         location = self.recorder.actualLocation().toLocalFile() or \
             self.recorder.outputLocation().toLocalFile()
         if not location or not os.path.isfile(location) or not os.path.getsize(location):
             return
-        self._last_recording = location
-        size = os.path.getsize(location)
 
         # 确保所有轨迹段都已正常闭合
         now = self._rec_elapsed()
@@ -2067,6 +2146,24 @@ class ShadowingView(QWidget):
 
         segments, self._rec_segments = self._rec_segments, []
         self._rec_started = None
+
+        # 按本次录音期间实际播放过的首尾题号与全局总序号定下最终文件名
+        folder = os.path.dirname(location) or self.database.get_recording_dir()
+        actual_ext = os.path.splitext(location)[1] or ".m4a"
+        final_name = self._generate_recording_filename(
+            folder, actual_ext, segments=segments, exclude_path=location
+        )
+        target_location = os.path.join(folder, final_name)
+        if os.path.normcase(os.path.abspath(location)) != os.path.normcase(os.path.abspath(target_location)):
+            try:
+                os.replace(location, target_location)
+                location = target_location
+            except OSError:
+                pass
+
+        self._last_recording = location
+        size = os.path.getsize(location)
+
         if segments:
             self._mix_recording(location, size, segments)
             return
@@ -2139,6 +2236,7 @@ class ShadowingView(QWidget):
             "start": now,
             "end": None,
             "path": path,
+            "title": item.get("title", "") if item else os.path.basename(path),
             "pos": pos_sec,
             "speed": float(self.player.playbackRate() or 1.0),
         })

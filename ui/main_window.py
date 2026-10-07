@@ -269,8 +269,9 @@ class MainWindow(QMainWindow):
 
         # 资料目录 / 脚本路径变更 → 让依赖它们的页面重扫
         self.settings_view.paths_changed.connect(self._on_paths_changed)
-        # 音频设备变更 → 让 P2 把新设备装到播放器/录音链上（它自己不会跟随系统默认）
+        # 音频设备变更 → 让 P2 和 P1 把新设备装到播放器/录音链上（它自己不会跟随系统默认）
         self.settings_view.audio_devices_changed.connect(self.shadowing_view.refresh_devices)
+        self.settings_view.audio_devices_changed.connect(self.vocab_view.refresh_audio_device)
         self.settings_view.data_reloaded.connect(self.refresh_all)
 
     def _setup_shortcuts(self):
@@ -339,8 +340,10 @@ class MainWindow(QMainWindow):
         self.shadowing_view.flush_study_session()
         self.vocab_view.flush_pending()
         self.snippets_view.flush_pending()
-        # 后台线程要收干净：P3 的目录扫描、P2 的 ffmpeg 转换、P4 的缩略图解码。
+        # 后台线程要收干净：P1/P5 的 TTS 合成、P3 的目录扫描、P2 的 ffmpeg 转换、P4 的缩略图解码。
         # QThread 还在跑就把窗口拆掉，Qt 会打印 "Destroyed while thread is still running"
+        self.vocab_view.shutdown()
+        self.settings_view.shutdown()
         self.vault_view.shutdown()
         self.shadowing_view.shutdown()
         self.snippets_view.shutdown()

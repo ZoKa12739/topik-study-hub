@@ -29,6 +29,7 @@ BACKUP_DIR = DATA_DIR / "backup"          # 迁移前备份与每日备份（PRO
 SNIPPETS_DIR = DATA_DIR / "snippets"      # P4 碎片图片存放处（D-2 决策，第 6 期启用）
 AUDIO_DIR = DATA_DIR / "audio"            # P2 音频库（D15 决策，第 5 期启用）
 RECORDINGS_DIR = DATA_DIR / "recordings"  # P2 跟读录音的默认落点（P5 可改，见 settings 表）
+TTS_DIR = DATA_DIR / "tts"                # P1 单词发音缓存目录（F3 联网发音本地缓存）
 
 # 资料库里被认作"科目"的子文件夹。资料根目录 = 同时含有这四者的目录。
 SUBJECT_FOLDERS = ("写作", "听力", "阅读", "单词")
@@ -39,6 +40,11 @@ _SKIP_DIRS = {"TOPIK_Study_Hub", "_font_cache", "__pycache__", ".git", ".workbud
 # 默认考试信息。只用于**首次**填入 settings 表；之后以库里的值为准（P5 可改）。
 DEFAULT_EXAM_DATE = "2027-04-11"
 DEFAULT_EXAM_LABEL = "第 109 届 TOPIK 考试"
+
+# 默认单词发音配置（F3）
+DEFAULT_TTS_MODE = "online"
+DEFAULT_TTS_VOICE = "google_ko"
+
 
 # 当前 schema 版本（PRODUCT_SPEC 6.4）。每次表结构变更都要 +1 并补一段迁移。
 # v2：word_states → words + word_notes（D2 方案 B），引入三态（D14）

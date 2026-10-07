@@ -43,6 +43,7 @@ from PySide6.QtWidgets import (
 
 from core.config import DATA_DIR
 from core.database import BACKUP_KEEP
+from core.tts import TTS_VOICES, WordSpeaker, clear_tts_cache
 from ui.components import Banner, show_toast
 from ui.icons import icon
 from ui.style import set_state
@@ -52,6 +53,7 @@ _SHORTCUTS = (
     ("Ctrl+1 ~ Ctrl+5", "切换到今日学习 / 单词仓 / 影子跟读 / 资料库 / 知识碎片"),
     ("Ctrl+,", "打开本页（设置与数据）"),
     ("Ctrl+F", "聚焦当前页搜索框"),
+    ("R", "朗读当前单词发音（仅单词仓，输入框聚焦时失效）"),
     ("Space", "播放 / 暂停（仅影子跟读，输入框聚焦时失效）"),
     ("A / B / C", "设置 A 点 / B 点 / 清除（仅影子跟读）"),
     ("← / →", "后退 / 前进 3 秒（仅影子跟读）"),
@@ -84,6 +86,10 @@ class SettingsView(QWidget):
     def __init__(self, database):
         super().__init__()
         self.database = database
+        self._preview_speaker = WordSpeaker(self.database, self)
+        self._preview_speaker.notice.connect(
+            lambda level, msg: show_toast(self.window(), msg, level=level)
+        )
         self.init_ui()
         self.refresh()
 
@@ -121,6 +127,7 @@ class SettingsView(QWidget):
         self._build_paths_group(layout)
         self._build_tools_group(layout)
         self._build_audio_group(layout)
+        self._build_tts_group(layout)
         self._build_shortcuts_group(layout)
         self._build_data_group(layout)
         layout.addStretch()
@@ -288,7 +295,82 @@ class SettingsView(QWidget):
     def save_audio_devices(self):
         self.database.set_audio_device("output", self.combo_output.currentData() or "")
         self.database.set_audio_device("input", self.combo_input.currentData() or "")
+        self._preview_speaker.refresh_audio_device()
         self.audio_devices_changed.emit()
+
+    # ---------------------------------------------------------------- 分组四（续）：单词发音
+
+    def _build_tts_group(self, layout):
+        """P1 单词发音配置（F3）。"""
+        box = self._group(
+            layout,
+            "单词发音",
+            "智能单词仓（P1）的韩语发音设置。联网模式下首次朗读会通过 Google 语音服务生成音频"
+            "并自动缓存在本机，同一单词再次朗读直接离线秒播；断网时自动退回系统离线语音。",
+        )
+
+        self.combo_tts_mode = QComboBox()
+        self.combo_tts_mode.addItem("Google 联网韩语发音（推荐，自动缓存到本地）", "online")
+        self.combo_tts_mode.addItem("仅使用系统本地韩语语音（完全离线）", "local")
+        self._field_row(box, "发音音源", self.combo_tts_mode, caption_width=110)
+
+        self.combo_tts_voice = QComboBox()
+        for voice_id, label in TTS_VOICES:
+            self.combo_tts_voice.addItem(label, voice_id)
+        self._field_row(box, "发音语速", self.combo_tts_voice, caption_width=110)
+
+        row = QHBoxLayout()
+        row.setSpacing(10)
+        row.addStretch()
+        self.btn_test_tts = QPushButton("试听发音")
+        self.btn_test_tts.setObjectName("iconButton")
+        self.btn_test_tts.setIcon(icon("volume"))
+        self.btn_test_tts.clicked.connect(self.preview_tts)
+        row.addWidget(self.btn_test_tts)
+
+        self.btn_clear_tts = QPushButton("清理发音缓存")
+        self.btn_clear_tts.setObjectName("iconButton")
+        self.btn_clear_tts.setIcon(icon("trash"))
+        self.btn_clear_tts.clicked.connect(self.clear_tts_cache_clicked)
+        row.addWidget(self.btn_clear_tts)
+        box.addLayout(row)
+
+        self.combo_tts_mode.currentIndexChanged.connect(self.save_tts_settings)
+        self.combo_tts_voice.currentIndexChanged.connect(self.save_tts_settings)
+
+    def _refresh_tts_controls(self):
+        mode = self.database.get_tts_mode()
+        voice = self.database.get_tts_voice()
+        self.combo_tts_mode.blockSignals(True)
+        self.combo_tts_voice.blockSignals(True)
+        mode_idx = self.combo_tts_mode.findData(mode)
+        self.combo_tts_mode.setCurrentIndex(mode_idx if mode_idx >= 0 else 0)
+        voice_idx = self.combo_tts_voice.findData(voice)
+        self.combo_tts_voice.setCurrentIndex(voice_idx if voice_idx >= 0 else 0)
+        self.combo_tts_voice.setEnabled(mode == "online")
+        self.combo_tts_mode.blockSignals(False)
+        self.combo_tts_voice.blockSignals(False)
+
+    def save_tts_settings(self):
+        mode = self.combo_tts_mode.currentData() or "online"
+        voice = self.combo_tts_voice.currentData() or TTS_VOICES[0][0]
+        self.database.set_tts_mode(mode)
+        self.database.set_tts_voice(voice)
+        self.combo_tts_voice.setEnabled(mode == "online")
+        show_toast(self.window(), "单词发音设置已保存")
+
+    def preview_tts(self):
+        self._preview_speaker.speak("안녕하세요, 단어 발음 테스트입니다.")
+        QDate.currentDate()  # 保持无阻塞
+
+    def clear_tts_cache_clicked(self):
+        self._preview_speaker.stop()
+        removed = clear_tts_cache()
+        self._refresh_usage()
+        show_toast(self.window(), f"已清理 {removed} 个发音缓存文件")
+
+    def shutdown(self):
+        self._preview_speaker.shutdown()
 
     # ---------------------------------------------------------------- 分组五：快捷键
 
@@ -375,6 +457,7 @@ class SettingsView(QWidget):
         self._refresh_root_status()
         self.input_recording_dir.setText(self.database.get_recording_dir())
         self.scan_audio_devices()
+        self._refresh_tts_controls()
         self._refresh_usage()
         self.detect_tools()
 
@@ -398,7 +481,8 @@ class SettingsView(QWidget):
             f"备份 {format_size(usage['backup'])} · "
             f"碎片 {format_size(usage['snippets'])} · "
             f"音频库 {format_size(usage['audio'])} · "
-            f"跟读录音 {format_size(usage['recordings'])}"
+            f"跟读录音 {format_size(usage['recordings'])} · "
+            f"发音缓存 {format_size(usage.get('tts', 0))}"
         )
         self.lbl_schema.setText(
             f"数据目录：{usage['data_dir']}　·　数据库 schema 版本：{self.database.schema_version()}"

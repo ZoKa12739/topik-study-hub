@@ -63,10 +63,12 @@ from PySide6.QtWidgets import (
     QWidget,
 )
 
+from core.tts import WordSpeaker
 from ui.components import Banner, EmptyState, make_copyable, show_toast
 from ui.icons import icon
 from ui.style import restyle
 from ui.theme import (
+    ACCENT,
     ACCENT_WARM,
     ROW_BASE_BG,
     ROW_DRILL_BG,
@@ -356,6 +358,9 @@ class VocabView(QWidget):
         self._note_timer.setInterval(self.NOTE_DEBOUNCE_MS)
         self._note_timer.timeout.connect(self._flush_note)
 
+        self.speaker = WordSpeaker(self.database, self)
+        self.speaker.notice.connect(self._on_speaker_notice)
+
         self.init_ui()
         self.refresh_lists()
         self.reload_browse()
@@ -474,6 +479,17 @@ class VocabView(QWidget):
 
         bar.addStretch()
 
+        self.btn_auto_tts = QPushButton("自动发音")
+        self.btn_auto_tts.setObjectName("modeSwitch")
+        self.btn_auto_tts.setCheckable(True)
+        self.btn_auto_tts.setCursor(Qt.PointingHandCursor)
+        self.btn_auto_tts.setFocusPolicy(Qt.NoFocus)
+        self.btn_auto_tts.setToolTip("过词与专攻模式下，切换到下一个单词时自动朗读韩语发音")
+        self.btn_auto_tts.clicked.connect(self._on_auto_tts_toggled)
+        self.btn_auto_tts.setVisible(False)
+        self._sync_auto_tts_button(self.database.get_tts_auto_play())
+        bar.addWidget(self.btn_auto_tts)
+
         self.btn_load_tsv = QPushButton("载入词表")
         self.btn_load_tsv.setObjectName("iconButton")
         self.btn_load_tsv.setIcon(icon("folder-open"))
@@ -547,6 +563,17 @@ class VocabView(QWidget):
         heading.setObjectName("sectionTitle")
         head.addWidget(heading)
         head.addStretch()
+
+        self.btn_detail_speak = QPushButton("发音")
+        self.btn_detail_speak.setObjectName("starToggle")
+        self.btn_detail_speak.setIcon(icon("volume", TEXT_COLORS["muted"], 14))
+        self.btn_detail_speak.setCursor(Qt.PointingHandCursor)
+        self.btn_detail_speak.setFocusPolicy(Qt.NoFocus)
+        self.btn_detail_speak.setToolTip("朗读韩语发音 (R)")
+        self.btn_detail_speak.setEnabled(False)
+        self.btn_detail_speak.clicked.connect(self.speak_current_word)
+        head.addWidget(self.btn_detail_speak)
+
         # 重点标记保留为次级控件：三态回答"会不会"，重点回答"想不想再看一眼"，
         # 是两个独立的轴（一个词可以既"认识"又被标为重点）。
         self.btn_star = QPushButton("标记重点")
@@ -664,6 +691,15 @@ class VocabView(QWidget):
         actions.setSpacing(10)
         actions.addStretch()
 
+        self.btn_pass_speak = QPushButton("发音")
+        self.btn_pass_speak.setObjectName("buttonOutline")
+        self.btn_pass_speak.setIcon(icon("volume", TEXT_COLORS["secondary"], 15))
+        self.btn_pass_speak.setCursor(Qt.PointingHandCursor)
+        self.btn_pass_speak.setFocusPolicy(Qt.NoFocus)
+        self.btn_pass_speak.setToolTip("朗读当前单词发音 (R)")
+        self.btn_pass_speak.clicked.connect(self.speak_current_word)
+        actions.addWidget(self.btn_pass_speak)
+
         self.btn_pass_undo = QPushButton("↩ 回退")
         self.btn_pass_undo.setObjectName("buttonOutline")
         self.btn_pass_undo.setCursor(Qt.PointingHandCursor)
@@ -686,7 +722,7 @@ class VocabView(QWidget):
         box.addLayout(actions)
 
         # 底部淡灰快捷键弱指引
-        self.lbl_pass_hint = QLabel("1 认识 · 2 模糊 · 3 不认识 · Space 揭示释义 · Ctrl+Z 回退")
+        self.lbl_pass_hint = QLabel("1 认识 · 2 模糊 · 3 不认识 · Space 揭示释义 · R 发音 · Ctrl+Z 回退")
         self.lbl_pass_hint.setObjectName("vocabCardHint")
         self.lbl_pass_hint.setAlignment(Qt.AlignCenter)
         box.addWidget(self.lbl_pass_hint)
@@ -760,10 +796,19 @@ class VocabView(QWidget):
 
         box.addStretch(1)
 
-        # 操作按钮区：加入回退选项
+        # 操作按钮区：加入发音与回退选项
         actions = QHBoxLayout()
         actions.setSpacing(10)
         actions.addStretch()
+
+        self.btn_drill_speak = QPushButton("发音")
+        self.btn_drill_speak.setObjectName("buttonOutline")
+        self.btn_drill_speak.setIcon(icon("volume", TEXT_COLORS["secondary"], 15))
+        self.btn_drill_speak.setCursor(Qt.PointingHandCursor)
+        self.btn_drill_speak.setFocusPolicy(Qt.NoFocus)
+        self.btn_drill_speak.setToolTip("朗读当前单词发音 (R)")
+        self.btn_drill_speak.clicked.connect(self.speak_current_word)
+        actions.addWidget(self.btn_drill_speak)
 
         self.btn_drill_undo = QPushButton("↩ 回退")
         self.btn_drill_undo.setObjectName("buttonOutline")
@@ -785,7 +830,7 @@ class VocabView(QWidget):
         box.addLayout(actions)
 
         # 底部淡灰快捷键弱指引
-        self.lbl_drill_hint = QLabel("1 认识了 · 2 还是不会 · Ctrl+Z 回退上一个")
+        self.lbl_drill_hint = QLabel("1 认识了 · 2 还是不会 · R 发音 · Ctrl+Z 回退上一个")
         self.lbl_drill_hint.setObjectName("vocabCardHint")
         self.lbl_drill_hint.setAlignment(Qt.AlignCenter)
         box.addWidget(self.lbl_drill_hint)
@@ -804,7 +849,7 @@ class VocabView(QWidget):
         return page
 
     # ==================================================================
-    # 键盘
+    # 键盘与发音
     # ==================================================================
 
     def _setup_shortcuts(self):
@@ -824,6 +869,10 @@ class VocabView(QWidget):
         self._undo_shortcut.setContext(Qt.WindowShortcut)
         self._undo_shortcut.activated.connect(self._handle_undo)
 
+        self._speak_shortcut = QShortcut(QKeySequence("R"), self)
+        self._speak_shortcut.setContext(Qt.WindowShortcut)
+        self._speak_shortcut.activated.connect(self._handle_speak_shortcut)
+
         # 2.6 的全局键里，`Ctrl+F` / `Ctrl+S` 落在有搜索框与笔记编辑区的模块上
         self._find_shortcut = QShortcut(QKeySequence.Find, self)
         self._find_shortcut.setContext(Qt.WindowShortcut)
@@ -841,11 +890,14 @@ class VocabView(QWidget):
         self._sync_shortcuts()
 
     def _sync_shortcuts(self):
-        active = self.isVisible() and self._mode != self.MODE_BROWSE
+        visible = self.isVisible()
+        active = visible and self._mode != self.MODE_BROWSE
         for shortcut in self._digit_shortcuts:
             shortcut.setEnabled(active)
         self._space_shortcut.setEnabled(active and self._mode == self.MODE_PASS)
         self._undo_shortcut.setEnabled(active)
+        if hasattr(self, "_speak_shortcut"):
+            self._speak_shortcut.setEnabled(visible)
 
     def _keyboard_ok(self):
         """键盘只在过词/专攻生效，且不得抢走文本输入框的输入。"""
@@ -853,6 +905,52 @@ class VocabView(QWidget):
             return False
         focus = QApplication.focusWidget()
         return not isinstance(focus, (QLineEdit, QTextEdit))
+
+    def _handle_speak_shortcut(self):
+        """快捷键 `R`：三个模式均可朗读当前词，但输入框聚焦时不拦截。"""
+        if not self.isVisible():
+            return
+        focus = QApplication.focusWidget()
+        if isinstance(focus, (QLineEdit, QTextEdit)):
+            return
+        self.speak_current_word()
+
+    def _sync_auto_tts_button(self, enabled: bool):
+        if not hasattr(self, "btn_auto_tts"):
+            return
+        self.btn_auto_tts.setChecked(bool(enabled))
+        self.btn_auto_tts.setIcon(
+            icon("volume", ACCENT if enabled else TEXT_COLORS["secondary"], 14)
+        )
+
+    def _on_auto_tts_toggled(self, checked: bool):
+        self.database.set_tts_auto_play(checked)
+        self._sync_auto_tts_button(checked)
+        if checked and self._mode in (self.MODE_PASS, self.MODE_DRILL):
+            self.speak_current_word()
+
+    def speak_current_word(self):
+        """朗读当前模式下的活跃单词。"""
+        korean = ""
+        if self._mode == self.MODE_BROWSE:
+            entry = self._detail or self._selected_word_entry()
+            korean = entry["korean"] if entry else ""
+        elif self._mode == self.MODE_PASS:
+            if 0 <= self._pass_index < len(self._pass_rows):
+                korean = self._pass_rows[self._pass_index]["korean"]
+        elif self._mode == self.MODE_DRILL:
+            if 0 <= self._drill_index < len(self._drill_rows):
+                korean = self._drill_rows[self._drill_index]["korean"]
+        if korean:
+            self.speaker.speak(korean)
+
+    def refresh_audio_device(self):
+        """P5 音频输出设备变更时同步到单词发音播放器。"""
+        self.speaker.refresh_audio_device()
+
+    def _on_speaker_notice(self, level: str, message: str):
+        if self.isVisible():
+            show_toast(self.window(), message, level=level)
 
     def _handle_undo(self):
         """统一处理 Ctrl+Z 回退快捷键：过词与专攻均可回退。"""
@@ -955,7 +1053,12 @@ class VocabView(QWidget):
         self._mode = mode
         self._sync_mode_buttons()
         self.pages.setCurrentIndex(mode)
-        self.search_input.setVisible(mode == self.MODE_BROWSE)
+        in_browse = mode == self.MODE_BROWSE
+        self.btn_load_tsv.setVisible(in_browse)
+        self.search_input.setVisible(in_browse)
+        if hasattr(self, "btn_auto_tts"):
+            self.btn_auto_tts.setVisible(not in_browse)
+            self._sync_auto_tts_button(self.database.get_tts_auto_play())
         self.banner.clear()
         self._sync_shortcuts()
 
@@ -998,6 +1101,7 @@ class VocabView(QWidget):
     def refresh(self):
         """数据被外部改动（导入备份、换资料目录）后重读一遍。"""
         self._flush_note()
+        self._sync_auto_tts_button(self.database.get_tts_auto_play())
         self.refresh_lists()
         self.set_mode(self._mode)
 
@@ -1168,6 +1272,8 @@ class VocabView(QWidget):
 
         self._configure_columns(list_id is None)
         self._detail = None
+        if hasattr(self, "btn_detail_speak"):
+            self.btn_detail_speak.setEnabled(False)
         self.table.setRowCount(0)
         for row, source in zip(rows, self._browse_source):
             self._append_row(row, source)
@@ -1251,7 +1357,7 @@ class VocabView(QWidget):
         show_toast(self.window(), f"已复制「{entry['korean']}」")
 
     def _table_context_menu(self, pos):
-        """表格右键：见得到，才想得到要复制什么。"""
+        """表格右键：提供朗读发音与复制选项。"""
         # 右键先选中指针底下的那一行——否则菜单会作用在"上次选中的行"上，
         # 而用户看着的是"右键点的那一行"。顺带把详情卡也同步过去。
         index = self.table.indexAt(pos)
@@ -1259,6 +1365,11 @@ class VocabView(QWidget):
             self.table.setCurrentCell(index.row(), index.column())
         menu = QMenu(self)
         entry = self._selected_word_entry()
+
+        speak_action = menu.addAction("朗读发音")
+        speak_action.setEnabled(entry is not None)
+        menu.addSeparator()
+
         actions = []
         for text, field in (
             ("复制韩语", "korean"),
@@ -1269,6 +1380,9 @@ class VocabView(QWidget):
             action.setEnabled(entry is not None)
             actions.append((action, field))
         chosen = menu.exec(self.table.viewport().mapToGlobal(pos))
+        if chosen is speak_action and entry is not None:
+            self.speaker.speak(entry["korean"])
+            return
         for action, field in actions:
             if chosen is action:
                 self.copy_current_word(field)
@@ -1348,6 +1462,8 @@ class VocabView(QWidget):
 
         row = self._browse_rows[index]
         self._detail = row
+        if hasattr(self, "btn_detail_speak"):
+            self.btn_detail_speak.setEnabled(True)
         self.lbl_detail_seq.setText(f"第 {row['seq']} 个")
         self.lbl_detail_kr.setText(row["korean"])
         self.lbl_detail_cn.setText(row["meaning"] or "")
@@ -1435,6 +1551,8 @@ class VocabView(QWidget):
             self.lbl_pass_kr.setText("这份词表里没有词条")
             self.lbl_pass_cn.setText("先在「浏览」里载入一份 TSV。")
             restyle(self.lbl_pass_cn, "faint")
+            if hasattr(self, "btn_pass_speak"):
+                self.btn_pass_speak.setEnabled(False)
             for button in self._judge_buttons.values():
                 button.setEnabled(False)
             return
@@ -1462,6 +1580,8 @@ class VocabView(QWidget):
         self.lbl_pass_kr.setText("这一遍过完了" if finished else "")
         for button in self._judge_buttons.values():
             button.setEnabled(not finished)
+        if hasattr(self, "btn_pass_speak"):
+            self.btn_pass_speak.setEnabled(not finished)
         if hasattr(self, "btn_pass_undo"):
             self.btn_pass_undo.setEnabled(bool(self._undo_stack))
 
@@ -1481,6 +1601,8 @@ class VocabView(QWidget):
             self.lbl_pass_kr.setText(row["korean"])
             self._revealed = False
             self._render_pass_meaning()
+            if self.database.get_tts_auto_play() and self.isVisible():
+                self.speaker.speak(row["korean"])
 
         self._update_pass_progress()
 
@@ -1611,6 +1733,8 @@ class VocabView(QWidget):
         self.lbl_drill_saved.setText("")
         self._update_drill_progress()
         self._sync_drill_undo_button()
+        if self.database.get_tts_auto_play() and self.isVisible():
+            self.speaker.speak(row["korean"])
 
     def _drill_judge(self, known):
         """专攻的两个动作。`认识了` 出列；`还是不会` 原样留在待专攻里。"""
@@ -1750,6 +1874,10 @@ class VocabView(QWidget):
         """关窗口前冲刷未落库的笔记（`MainWindow.closeEvent` 调用）。"""
         self._flush_note()
 
+    def shutdown(self):
+        """关窗口时停止播放并等待后台发音线程结束。"""
+        self.speaker.shutdown()
+
     def showEvent(self, event):
         super().showEvent(event)
         self._sync_shortcuts()
@@ -1757,12 +1885,15 @@ class VocabView(QWidget):
     def hideEvent(self, event):
         # 切到别的页面也要冲刷：本页不是当前页时，防抖定时器还要再等 1.5 秒
         self._flush_note()
+        self.speaker.stop()
         for shortcut in getattr(self, "_digit_shortcuts", []):
             shortcut.setEnabled(False)
         if hasattr(self, "_space_shortcut"):
             self._space_shortcut.setEnabled(False)
         if hasattr(self, "_undo_shortcut"):
             self._undo_shortcut.setEnabled(False)
+        if hasattr(self, "_speak_shortcut"):
+            self._speak_shortcut.setEnabled(False)
         super().hideEvent(event)
 
     # ==================================================================

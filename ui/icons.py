@@ -73,6 +73,8 @@ _SVG = {
                 '<path d="M1.5 15h5M9.5 8h5M17.5 17h5"/>',
     "note": '<path d="M12 3H6a2 2 0 0 0-2 2v14a2 2 0 0 0 2 2h9l5-5V7"/>'
             '<path d="M20 7l-4-4v5h4"/>',
+    "edit": '<path d="M12 20h9"/>'
+            '<path d="M16.5 3.5a2.12 2.12 0 0 1 3 3L7 19l-4 1 1-4Z"/>',
 
     # ---- 文件类型（P3 资料库） ----
     "file-text": '<path d="M14 2.5H6.5A1.5 1.5 0 0 0 5 4v16a1.5 1.5 0 0 0 1.5 1.5h11A1.5 1.5 0 0 0 19 20V7.5z"/>'
@@ -84,9 +86,12 @@ _SVG = {
             '<path d="M7.5 4v16M16.5 4v16M2.5 12h19"/>',
     "presentation": '<rect x="3" y="4" width="18" height="11" rx="1.5"/><path d="M12 15v5M8.5 20h7"/>',
 
-    # ---- 播放器（P2） ----
+    # ---- 播放器与录音（P2） ----
     "play": '<path d="M7 4.5l12 7.5-12 7.5z"/>',
     "pause": '<path d="M9 4.5v15M15 4.5v15"/>',
+    "stop": '<rect x="6" y="6" width="12" height="12" rx="2"/>',
+    "mic": '<rect x="9" y="3" width="6" height="11" rx="3"/>'
+           '<path d="M5 10v1a7 7 0 0 0 14 0v-1M12 18v3M8 21h8"/>',
     "skip-back": '<path d="M18.5 20L8.5 12l10-8z"/><path d="M5 19V5"/>',
     "skip-forward": '<path d="M5.5 4L15.5 12l-10 8z"/><path d="M19 5v14"/>',
     "repeat": '<path d="M17 2.5L20.5 6 17 9.5"/><path d="M3.5 11.5V10a4 4 0 0 1 4-4h13"/>'

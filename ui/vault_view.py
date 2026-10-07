@@ -30,7 +30,7 @@ import subprocess
 import sys
 from datetime import datetime
 
-from PySide6.QtCore import Qt, QTimer, QUrl, Signal
+from PySide6.QtCore import QSize, Qt, QTimer, QUrl, Signal
 from PySide6.QtGui import QBrush, QColor, QDesktopServices, QIntValidator
 from PySide6.QtWidgets import (
     QApplication,
@@ -56,7 +56,15 @@ from PySide6.QtWidgets import (
 from core.config import SUBJECT_FOLDERS, normalize_path
 from core.library import ScanWorker, delete_file, file_extension, pdf_page_count
 from core.snippets import IMAGE_EXTS
-from ui.components import Banner, EmptyState, InlineProgress, make_copyable, show_toast
+from ui.components import (
+    Banner,
+    EmptyState,
+    GhostLineEdit,
+    InlineProgress,
+    PillListDelegate,
+    make_copyable,
+    show_toast,
+)
 from ui.icons import icon
 from ui.theme import TEXT_COLORS
 
@@ -174,20 +182,10 @@ class VaultView(QWidget):
 
     def init_ui(self):
         layout = QVBoxLayout(self)
-        layout.setContentsMargins(24, 20, 24, 20)
+        layout.setContentsMargins(24, 16, 24, 20)
         layout.setSpacing(12)
 
-        eyebrow = QLabel("TOPIK 资料库")
-        eyebrow.setObjectName("pageEyebrow")
-        layout.addWidget(eyebrow)
-        title = QLabel("资料索引")
-        title.setObjectName("pageTitle")
-        layout.addWidget(title)
-        subtitle = QLabel("只读索引：工具不改动任何资料文件，只负责让你找到它。")
-        subtitle.setObjectName("pageSubtitle")
-        layout.addWidget(subtitle)
-
-        layout.addLayout(self._build_toolbar())
+        layout.addWidget(self._build_toolbar())
 
         self.banner = Banner()
         self.banner.action_clicked.connect(self._on_banner_action)
@@ -197,6 +195,7 @@ class VaultView(QWidget):
 
         splitter = QSplitter(Qt.Horizontal)
         splitter.setObjectName("vaultSplitter")
+        splitter.setHandleWidth(1)
         splitter.setChildrenCollapsible(False)
         splitter.addWidget(self._build_list_area())
         splitter.addWidget(self._build_detail_panel())
@@ -206,21 +205,24 @@ class VaultView(QWidget):
         layout.addWidget(splitter, 1)
 
     def _build_toolbar(self):
-        bar = QHBoxLayout()
+        frame = QFrame()
+        frame.setObjectName("commandBar")
+        bar = QHBoxLayout(frame)
+        bar.setContentsMargins(0, 0, 0, 8)
         bar.setSpacing(8)
 
-        label = QLabel("科目")
-        label.setObjectName("muted")
-        bar.addWidget(label)
+        title = QLabel("资料索引")
+        title.setObjectName("sectionTitle")
+        bar.addWidget(title)
+
         self.combo_subject = QComboBox()
-        self.combo_subject.addItems(["全部", *SUBJECT_FOLDERS])
-        self.combo_subject.setMinimumWidth(88)
+        self.combo_subject.addItem("科目: 全部", "全部")
+        for s in SUBJECT_FOLDERS:
+            self.combo_subject.addItem(f"科目: {s}", s)
+        self.combo_subject.setMinimumWidth(112)
         self.combo_subject.currentIndexChanged.connect(self.apply_filter)
         bar.addWidget(self.combo_subject)
 
-        label = QLabel("标签")
-        label.setObjectName("muted")
-        bar.addWidget(label)
         self.combo_tag = QComboBox()
         self.combo_tag.setMinimumWidth(120)
         self.combo_tag.currentIndexChanged.connect(self.apply_filter)
@@ -231,13 +233,10 @@ class VaultView(QWidget):
         self.search_input.textChanged.connect(self.apply_filter)
         bar.addWidget(self.search_input, 1)
 
-        label = QLabel("排序")
-        label.setObjectName("muted")
-        bar.addWidget(label)
         self.combo_sort = QComboBox()
         for text, key in _SORT_MODES:
-            self.combo_sort.addItem(text, key)
-        self.combo_sort.setMinimumWidth(130)
+            self.combo_sort.addItem(f"排序: {text}", key)
+        self.combo_sort.setMinimumWidth(154)
         self.combo_sort.currentIndexChanged.connect(self.apply_filter)
         bar.addWidget(self.combo_sort)
 
@@ -247,7 +246,7 @@ class VaultView(QWidget):
         self.btn_refresh.setToolTip("重新比对资料目录；只更新有变化的文件")
         self.btn_refresh.clicked.connect(self.start_scan)
         bar.addWidget(self.btn_refresh)
-        return bar
+        return frame
 
     def _build_progress_row(self):
         """索引进行中的行内反馈（4.4 状态表：加载时要有进度，且不阻塞 UI）。"""
@@ -270,6 +269,8 @@ class VaultView(QWidget):
     def _build_list_area(self):
         self.list_widget = QListWidget()
         self.list_widget.setObjectName("vaultList")
+        self._list_delegate = PillListDelegate(self.list_widget)
+        self.list_widget.setItemDelegate(self._list_delegate)
         self.list_widget.itemSelectionChanged.connect(self._on_selection_changed)
         self.list_widget.itemDoubleClicked.connect(self._on_double_clicked)
         self.list_widget.setContextMenuPolicy(Qt.CustomContextMenu)
@@ -286,9 +287,9 @@ class VaultView(QWidget):
     def _build_detail_panel(self):
         """详情侧栏（4.4 信息层级 H4）：元信息 + 标签编辑 + 上次阅读 + 快速操作。"""
         panel = QFrame()
-        panel.setObjectName("surface")
+        panel.setObjectName("flatDetailPanel")
         box = QVBoxLayout(panel)
-        box.setContentsMargins(16, 16, 16, 16)
+        box.setContentsMargins(16, 12, 16, 16)
         box.setSpacing(8)
 
         self.lbl_detail_name = QLabel("未选择资料")
@@ -316,8 +317,7 @@ class VaultView(QWidget):
 
         page_row = QHBoxLayout()
         page_row.setSpacing(6)
-        self.page_input = QLineEdit()
-        self.page_input.setPlaceholderText("看到第几页")
+        self.page_input = GhostLineEdit("看到第几页")
         self.page_input.setValidator(QIntValidator(0, 99999, self))
         self.page_input.setFixedWidth(96)
         # 外部程序打开 PDF 时**无法定位到页**（4.4 流程 D 的已知限制），
@@ -350,8 +350,7 @@ class VaultView(QWidget):
 
         tag_row = QHBoxLayout()
         tag_row.setSpacing(6)
-        self.tag_input = QLineEdit()
-        self.tag_input.setPlaceholderText("新标签，如 真题 / 105届")
+        self.tag_input = GhostLineEdit("新标签，如 真题 / 105届")
         self.tag_input.returnPressed.connect(self.add_tag)
         tag_row.addWidget(self.tag_input, 1)
         self.btn_add_tag = QPushButton("添加")
@@ -524,15 +523,15 @@ class VaultView(QWidget):
         current = self.combo_tag.currentData() if self.combo_tag.count() else None
         self.combo_tag.blockSignals(True)
         self.combo_tag.clear()
-        self.combo_tag.addItem("全部标签", None)
+        self.combo_tag.addItem("标签: 全部", None)
         for row in self.database.all_material_tags():
-            self.combo_tag.addItem(f"#{row['tag']}（{row['n']}）", row["tag"])
+            self.combo_tag.addItem(f"标签: #{row['tag']}（{row['n']}）", row["tag"])
         index = self.combo_tag.findData(current)
         self.combo_tag.setCurrentIndex(index if index >= 0 else 0)
         self.combo_tag.blockSignals(False)
 
     def apply_filter(self, *_ignored):
-        subject = self.combo_subject.currentText()
+        subject = self.combo_subject.currentData() or "全部"
         tag = self.combo_tag.currentData()
         keyword = self.search_input.text().strip().lower()
 
@@ -590,7 +589,29 @@ class VaultView(QWidget):
             )
         if row["missing"]:
             bits.append("文件已不在原位置")
-        return f"{row['name']}\n    └─ " + (" · ".join(bits) if bits else "—")
+        return f"{row['name']}\n" + (" · ".join(bits) if bits else "—")
+
+    def _populate_vault_item(self, item, row):
+        item.setText(self._item_text(row))
+        item.setSizeHint(QSize(0, 52))
+        item.setData(PillListDelegate.TITLE_ROLE, row["name"])
+        item.setData(PillListDelegate.FAINT_ROLE, bool(row["missing"]))
+        pills = []
+        relative = self._relative_dir(row["path"])
+        if relative:
+            pills.append((relative, False))
+        for tag in row["tags"]:
+            pills.append((f"#{tag}", False))
+        if row["last_page"]:
+            page_text = f"第 {row['last_page']}" + (
+                f" / {row['total_pages']} 页" if row["total_pages"] else " 页"
+            )
+            pills.append((page_text, True))
+        if row["missing"]:
+            pills.append(("文件已不在原位置", True))
+        if not pills:
+            pills.append(("根目录", True))
+        item.setData(PillListDelegate.PILL_ROLE, pills)
 
     def _render_list(self):
         keep = self._selected
@@ -607,6 +628,7 @@ class VaultView(QWidget):
             font = item.font()
             font.setPixelSize(13)
             item.setFont(font)
+            self._populate_vault_item(item, row)
             self.list_widget.addItem(item)
         self.list_widget.blockSignals(False)
 
@@ -635,7 +657,7 @@ class VaultView(QWidget):
 
     def _filter_summary(self):
         bits = []
-        subject = self.combo_subject.currentText()
+        subject = self.combo_subject.currentData() or "全部"
         if subject != "全部":
             bits.append(subject)
         tag = self.combo_tag.currentData()
@@ -907,7 +929,7 @@ class VaultView(QWidget):
             if item.data(Qt.UserRole) == path:
                 row = self._row_for(path)
                 if row is not None:
-                    item.setText(self._item_text(row))
+                    self._populate_vault_item(item, row)
                     # 颜色也要跟着 missing 一起回来，否则"文件找回来了"这一行仍然灰着
                     item.setForeground(
                         QBrush(QColor(

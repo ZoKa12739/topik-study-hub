@@ -98,17 +98,32 @@ from PySide6.QtWidgets import (
 
 from core import audio
 from core.config import AUDIO_DIR
-from ui.components import Banner, EmptyState, make_copyable, show_toast
+from ui.components import (
+    DOT_ROLE,
+    FAINT_ROLE,
+    PILL_ROLE,
+    TITLE_ROLE,
+    Banner,
+    EmptyState,
+    PillListDelegate,
+    make_copyable,
+    show_toast,
+)
 from ui.icons import icon
 from ui.style import restyle
 from ui.theme import STATE_COLORS, TEXT_COLORS
 
-# 曲目状态点的**形状 + 文字**。§9.3 要求不靠颜色单独承载语义，所以两样都给。
-# `None` 是"未听"——不是枚举成员，是"这一栏还没写过"。
+# 曲目状态点的语义等级与文字（配合 StatusDot / PillListDelegate，不混入字符符号）
+TRACK_STATUS_DOTS = {
+    None: "muted",
+    "listening": "warning",
+    "done": "success",
+}
+
 TRACK_STATUS_LABELS = {
-    None: ("○", "未听"),
-    "listening": ("●", "在听"),
-    "done": ("✓", "已磕完"),
+    None: ("", "未听"),
+    "listening": ("", "在听"),
+    "done": ("", "已磕完"),
 }
 
 LOOP_MODES = ("顺序", "列表循环", "单曲循环")
@@ -280,14 +295,16 @@ class PdfPanel(QFrame):
 
     def __init__(self, heading, empty_hint, parent=None):
         super().__init__(parent)
-        self.setObjectName("surface")
+        self.setObjectName("pdfBleedPanel")
         self._path = None
 
         box = QVBoxLayout(self)
-        box.setContentsMargins(10, 10, 10, 10)
-        box.setSpacing(6)
+        box.setContentsMargins(0, 0, 0, 0)
+        box.setSpacing(0)
 
-        head = QHBoxLayout()
+        head_wrap = QWidget()
+        head = QHBoxLayout(head_wrap)
+        head.setContentsMargins(12, 8, 12, 8)
         head.setSpacing(6)
         self.lbl_heading = QLabel(heading)
         self.lbl_heading.setObjectName("sectionTitle")
@@ -309,7 +326,7 @@ class PdfPanel(QFrame):
         self.btn_choose.setObjectName("iconButton")
         self.btn_choose.setIcon(icon("file-text"))
         head.addWidget(self.btn_choose)
-        box.addLayout(head)
+        box.addWidget(head_wrap)
 
         self.view = HandPdfView()
         self.view.setObjectName("pdfView")
@@ -582,20 +599,10 @@ class ShadowingView(QWidget):
 
     def init_ui(self):
         layout = QVBoxLayout(self)
-        layout.setContentsMargins(24, 20, 24, 20)
-        layout.setSpacing(12)
+        layout.setContentsMargins(0, 0, 0, 0)
+        layout.setSpacing(0)
         # 拖拽导入（见 dropEvent）。装在页面上而不是列表上：拖到页面的任何位置都认。
         self.setAcceptDrops(True)
-
-        eyebrow = QLabel("沉浸式听力")
-        eyebrow.setObjectName("pageEyebrow")
-        layout.addWidget(eyebrow)
-        title = QLabel("影子跟读")
-        title.setObjectName("pageTitle")
-        layout.addWidget(title)
-        subtitle = QLabel("音频、原文与解析放在同一个专注空间；只有在播放时才计时。")
-        subtitle.setObjectName("pageSubtitle")
-        layout.addWidget(subtitle)
 
         layout.addWidget(self._build_prepare_bar())
 
@@ -605,6 +612,7 @@ class ShadowingView(QWidget):
 
         self.splitter = QSplitter(Qt.Horizontal)
         self.splitter.setObjectName("shadowingSplitter")
+        self.splitter.setHandleWidth(1)
         self.list_panel = self._build_list_panel()
         self.splitter.addWidget(self.list_panel)
         self.splitter.addWidget(self._build_workspace())
@@ -626,7 +634,7 @@ class ShadowingView(QWidget):
         bar = QFrame()
         bar.setObjectName("shadowingToolbar")
         box = QVBoxLayout(bar)
-        box.setContentsMargins(0, 2, 0, 4)
+        box.setContentsMargins(16, 8, 16, 8)
         box.setSpacing(4)
 
         row = QHBoxLayout()
@@ -641,6 +649,10 @@ class ShadowingView(QWidget):
         self.btn_toggle_list.setCursor(Qt.PointingHandCursor)
         self.btn_toggle_list.setFocusPolicy(Qt.NoFocus)
         row.addWidget(self.btn_toggle_list)
+
+        title = QLabel("影子跟读")
+        title.setObjectName("sectionTitle")
+        row.addWidget(title)
 
         self.btn_import_audio = QPushButton("导入音频")
         self.btn_import_audio.setObjectName("iconButton")
@@ -741,6 +753,8 @@ class ShadowingView(QWidget):
         self.track_list = QListWidget()
         self.track_list.setObjectName("trackList")
         self.track_list.setVerticalScrollMode(QListWidget.ScrollPerPixel)
+        self._track_delegate = PillListDelegate(self.track_list)
+        self.track_list.setItemDelegate(self._track_delegate)
         # 拖拽排序（4.3 流程 A 第 4 条）：内部移动，落库在 _on_rows_moved
         self.track_list.setDragDropMode(QListWidget.InternalMove)
         self.track_list.setDefaultDropAction(Qt.MoveAction)
@@ -770,10 +784,11 @@ class ShadowingView(QWidget):
         self.workspace_page = page
         box = QVBoxLayout(page)
         box.setContentsMargins(0, 0, 0, 0)
-        box.setSpacing(8)
+        box.setSpacing(0)
 
         pdf_split = QSplitter(Qt.Horizontal)
         pdf_split.setObjectName("shadowingSplitter")
+        pdf_split.setHandleWidth(1)
         self.kr_pdf = PdfPanel("原文", "这份播放列表还没有配原文 PDF")
         self.cn_pdf = PdfPanel("解析", "这份播放列表还没有配解析 PDF")
         self._active_pdf = self.kr_pdf
@@ -860,8 +875,8 @@ class ShadowingView(QWidget):
         self.btn_prev.setToolTip("上一个音频（Ctrl+←）")
 
         self.btn_play = QPushButton("播放")
-        self.btn_play.setObjectName("primaryButton")
-        self.btn_play.setIcon(icon("play", "#FFFFFF", 14))
+        self.btn_play.setObjectName("transportBtn")
+        self.btn_play.setIcon(icon("play", TEXT_COLORS["primary"], 14))
         self.btn_play.setFixedHeight(28)
         self.btn_play.setMinimumWidth(68)
 
@@ -923,8 +938,9 @@ class ShadowingView(QWidget):
 
         row = QHBoxLayout()
         row.setSpacing(8)
-        self.btn_record = QPushButton("● 录音")
+        self.btn_record = QPushButton("录音")
         self.btn_record.setObjectName("recordButton")
+        self.btn_record.setIcon(icon("mic", TEXT_COLORS["secondary"], 14))
         self.btn_record.setCursor(Qt.PointingHandCursor)
         self.btn_record.setFocusPolicy(Qt.NoFocus)
         self.btn_record.setMinimumWidth(80)
@@ -934,8 +950,9 @@ class ShadowingView(QWidget):
         )
         row.addWidget(self.btn_record)
 
-        self.btn_pause_record = QPushButton("Ⅱ 暂停")
-        self.btn_pause_record.setObjectName("iconButton")
+        self.btn_pause_record = QPushButton("暂停")
+        self.btn_pause_record.setObjectName("transportBtn")
+        self.btn_pause_record.setIcon(icon("pause", TEXT_COLORS["secondary"], 14))
         self.btn_pause_record.setMinimumWidth(72)
         self.btn_pause_record.setFixedHeight(30)
         self.btn_pause_record.setEnabled(False)
@@ -1090,15 +1107,37 @@ class ShadowingView(QWidget):
         for index, item in enumerate(self._items, start=1):
             entry = QListWidgetItem(self._track_line(index, item))
             entry.setData(Qt.UserRole, item["track_id"])
-            entry.setSizeHint(QSize(0, 46))
-            if not audio.exists_in_library(item["path"], AUDIO_DIR):
-                # 缺失的曲目整行压淡——但**文字里已经写明"缺失"**，颜色只是冗余
-                # （§9.3：不让颜色单独承载语义）
-                entry.setForeground(QColor(TEXT_COLORS["faint"]))
+            entry.setSizeHint(QSize(0, 52))
+            self._populate_track_entry(entry, index, item)
             self.track_list.addItem(entry)
         self._rebuilding = False
         self._sync_track_selection()
         self._update_empty_state()
+
+    def _populate_track_entry(self, entry, index, item):
+        title = f"{index}. {elide(item['title'], 22)}"
+        entry.setText(self._track_line(index, item))
+        entry.setData(PillListDelegate.TITLE_ROLE, title)
+        missing = not audio.exists_in_library(item["path"], AUDIO_DIR)
+        entry.setData(PillListDelegate.FAINT_ROLE, missing)
+        if missing:
+            entry.setForeground(QColor(TEXT_COLORS["faint"]))
+            entry.setData(PillListDelegate.DOT_ROLE, TRACK_STATUS_DOTS["missing"])
+            entry.setData(
+                PillListDelegate.PILL_ROLE,
+                [("缺失", True), ("文件已不在音频库中", True)],
+            )
+        else:
+            _, label = TRACK_STATUS_LABELS.get(item["status"], TRACK_STATUS_LABELS[None])
+            duration = stamp(item["duration_ms"]) if item["duration_ms"] else "—"
+            entry.setData(
+                PillListDelegate.DOT_ROLE,
+                TRACK_STATUS_DOTS.get(item["status"], TRACK_STATUS_DOTS[None]),
+            )
+            entry.setData(
+                PillListDelegate.PILL_ROLE,
+                [(label, False), (duration, True)],
+            )
 
     def _track_line(self, index, item):
         mark, label = TRACK_STATUS_LABELS.get(item["status"], TRACK_STATUS_LABELS[None])
@@ -1543,7 +1582,7 @@ class ShadowingView(QWidget):
             widget.setEnabled(enabled)
         if not enabled:
             self.btn_play.setText("播放")
-            self.btn_play.setIcon(icon("play", "#FFFFFF", 14))
+            self.btn_play.setIcon(icon("play", TEXT_COLORS["primary"], 14))
             self.btn_clear_ab.setEnabled(False)
 
     def _reload_track_row(self):
@@ -1552,7 +1591,7 @@ class ShadowingView(QWidget):
         row = self.track_list.currentRow()
         item = self._current_item()
         if item is not None and 0 <= row < self.track_list.count():
-            self.track_list.item(row).setText(self._track_line(row + 1, item))
+            self._populate_track_entry(self.track_list.item(row), row + 1, item)
         self._update_list_meta()
         self._update_track_meta()
 
@@ -1608,7 +1647,7 @@ class ShadowingView(QWidget):
         else:
             # 顺序播完即停（4.3 核心组件表）
             self.btn_play.setText("播放")
-            self.btn_play.setIcon(icon("play", "#FFFFFF", 14))
+            self.btn_play.setIcon(icon("play", TEXT_COLORS["primary"], 14))
             self._set_status("这份列表播完了")
 
     def remove_current_from_playlist(self):
@@ -1659,7 +1698,7 @@ class ShadowingView(QWidget):
     def _on_playback_state(self, state):
         playing = state == QMediaPlayer.PlaybackState.PlayingState
         self.btn_play.setText("暂停" if playing else "播放")
-        self.btn_play.setIcon(icon("pause" if playing else "play", "#FFFFFF", 14))
+        self.btn_play.setIcon(icon("pause" if playing else "play", TEXT_COLORS["primary"], 14))
         # 录音期间：原音开始出声就记一段轨迹，停下就给它封口。暂停要**封口而不是
         # 合并**——那几秒麦克风还在录，你的时间轴还在走，只是原音没出声。
         if playing:
@@ -2119,9 +2158,17 @@ class ShadowingView(QWidget):
             self._rec_close_segment()
 
         restyle(self.btn_record, "recordButtonActive" if active else "recordButton")
-        self.btn_record.setText("■ 停止" if active else "● 录音")
+        self.btn_record.setText("停止" if active else "录音")
+        self.btn_record.setIcon(
+            icon("stop", STATE_COLORS["danger"], 14)
+            if active
+            else icon("mic", TEXT_COLORS["secondary"], 14)
+        )
         self.btn_pause_record.setEnabled(active)
-        self.btn_pause_record.setText("Ⅱ 继续" if paused else "Ⅱ 暂停")
+        self.btn_pause_record.setText("继续" if paused else "暂停")
+        self.btn_pause_record.setIcon(
+            icon("play" if paused else "pause", TEXT_COLORS["secondary"], 14)
+        )
         if not active and self._record_session_active:
             self._record_session_active = False
             self._finish_recording()
@@ -2490,7 +2537,8 @@ class ShadowingView(QWidget):
         self._record_session_active = False
         self._recording = False
         restyle(self.btn_record, "recordButton")
-        self.btn_record.setText("● 录音")
+        self.btn_record.setText("录音")
+        self.btn_record.setIcon(icon("mic", TEXT_COLORS["secondary"], 14))
         self.lbl_recording.setText("录音失败")
         self._show_banner(
             "warning",

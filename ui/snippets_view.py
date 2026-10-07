@@ -64,7 +64,15 @@ from core.snippets import (
     pasted_file_name,
     unique_destination,
 )
-from ui.components import Banner, EmptyState, make_copyable, show_toast
+from ui.components import (
+    Banner,
+    EmptyState,
+    GhostLineEdit,
+    GhostTextEdit,
+    PillListDelegate,
+    make_copyable,
+    show_toast,
+)
 from ui.icons import icon
 from ui.theme import TEXT_COLORS
 from ui.vault_view import reveal_in_folder
@@ -182,21 +190,10 @@ class SnippetsView(QWidget):
 
     def init_ui(self):
         layout = QVBoxLayout(self)
-        layout.setContentsMargins(24, 20, 24, 20)
+        layout.setContentsMargins(24, 16, 24, 20)
         layout.setSpacing(12)
 
-        title = QLabel("知识碎片")
-        title.setObjectName("pageTitle")
-        layout.addWidget(title)
-
-        subtitle = QLabel(
-            "零散截图的收集处。在别处截好图，回到这里按 Ctrl+V 贴进来；也可以直接导入图片。"
-        )
-        subtitle.setObjectName("pageSubtitle")
-        subtitle.setWordWrap(True)
-        layout.addWidget(subtitle)
-
-        layout.addLayout(self._build_toolbar())
+        layout.addWidget(self._build_toolbar())
 
         self.lbl_status = QLabel("")
         self.lbl_status.setObjectName("faint")
@@ -209,6 +206,7 @@ class SnippetsView(QWidget):
 
         splitter = QSplitter(Qt.Horizontal)
         splitter.setObjectName("snippetsSplitter")
+        splitter.setHandleWidth(1)
         splitter.setChildrenCollapsible(False)
         splitter.addWidget(self._build_list_area())
         splitter.addWidget(self._build_detail_area())
@@ -218,8 +216,15 @@ class SnippetsView(QWidget):
         self.apply_view_mode(True)
 
     def _build_toolbar(self):
-        bar = QHBoxLayout()
+        frame = QFrame()
+        frame.setObjectName("commandBar")
+        bar = QHBoxLayout(frame)
+        bar.setContentsMargins(0, 0, 0, 8)
         bar.setSpacing(8)
+
+        title = QLabel("知识碎片")
+        title.setObjectName("sectionTitle")
+        bar.addWidget(title)
 
         self.btn_paste = QPushButton(icon("clipboard"), "粘贴图片 (Ctrl+V)")
         self.btn_paste.clicked.connect(self.paste_image)
@@ -229,19 +234,13 @@ class SnippetsView(QWidget):
         self.btn_import.clicked.connect(self.import_images)
         bar.addWidget(self.btn_import)
 
-        label = QLabel("来源")
-        label.setObjectName("muted")
-        bar.addWidget(label)
         self.combo_source = QComboBox()
-        self.combo_source.setMinimumWidth(96)
+        self.combo_source.setMinimumWidth(116)
         self.combo_source.currentIndexChanged.connect(self.apply_filter)
         bar.addWidget(self.combo_source)
 
-        label = QLabel("标签")
-        label.setObjectName("muted")
-        bar.addWidget(label)
         self.combo_tag = QComboBox()
-        self.combo_tag.setMinimumWidth(110)
+        self.combo_tag.setMinimumWidth(120)
         self.combo_tag.currentIndexChanged.connect(self.apply_filter)
         bar.addWidget(self.combo_tag)
 
@@ -258,11 +257,13 @@ class SnippetsView(QWidget):
         self.btn_view_mode.setToolTip("在网格视图与列表视图之间切换")
         self.btn_view_mode.toggled.connect(self.apply_view_mode)
         bar.addWidget(self.btn_view_mode)
-        return bar
+        return frame
 
     def _build_list_area(self):
         self.list_widget = QListWidget()
         self.list_widget.setObjectName("snippetList")
+        self._list_delegate = PillListDelegate(self.list_widget)
+        self.list_widget.setItemDelegate(self._list_delegate)
         self.list_widget.setSelectionMode(QAbstractItemView.SingleSelection)
         self.list_widget.itemSelectionChanged.connect(self._on_selection_changed)
         self.list_widget.itemDoubleClicked.connect(self._on_item_double_clicked)
@@ -285,6 +286,7 @@ class SnippetsView(QWidget):
     def _build_detail_area(self):
         split = QSplitter(Qt.Vertical)
         split.setObjectName("snippetsDetailSplitter")
+        split.setHandleWidth(1)
         split.setChildrenCollapsible(False)
 
         # ---- 上：预览 ----
@@ -305,9 +307,9 @@ class SnippetsView(QWidget):
 
         # ---- 下：详情（笔记 / 标签 / 动作） ----
         panel = QFrame()
-        panel.setObjectName("surface")
+        panel.setObjectName("flatDetailPanel")
         box = QVBoxLayout(panel)
-        box.setContentsMargins(16, 16, 16, 16)
+        box.setContentsMargins(16, 12, 16, 16)
         box.setSpacing(8)
 
         self.lbl_detail_name = QLabel("未选择碎片")
@@ -329,8 +331,7 @@ class SnippetsView(QWidget):
         heading.setObjectName("sectionTitle")
         box.addSpacing(4)
         box.addWidget(heading)
-        self.title_input = QLineEdit()
-        self.title_input.setPlaceholderText("给这张图起个名字（修改后重命名文件）")
+        self.title_input = GhostLineEdit("给这张图起个名字（修改后重命名文件）")
         self.title_input.textEdited.connect(self._on_title_edited)
         self.title_input.editingFinished.connect(self._flush_title)
         self.title_input.returnPressed.connect(self.title_input.clearFocus)
@@ -347,8 +348,7 @@ class SnippetsView(QWidget):
         box.addSpacing(4)
         box.addLayout(note_row)
 
-        self.note_edit = QTextEdit()
-        self.note_edit.setPlaceholderText("这张图在讲什么？当时为什么存它？（自动保存）")
+        self.note_edit = GhostTextEdit("这张图在讲什么？当时为什么存它？（自动保存）")
         self.note_edit.setFixedHeight(96)
         self.note_edit.textChanged.connect(self._on_note_edited)
         box.addWidget(self.note_edit)
@@ -366,8 +366,7 @@ class SnippetsView(QWidget):
 
         tag_row = QHBoxLayout()
         tag_row.setSpacing(6)
-        self.tag_input = QLineEdit()
-        self.tag_input.setPlaceholderText("新标签，如 副词 / 91届")
+        self.tag_input = GhostLineEdit("新标签，如 副词 / 91届")
         self.tag_input.returnPressed.connect(self.add_tag)
         tag_row.addWidget(self.tag_input, 1)
         self.btn_add_tag = QPushButton("添加")
@@ -470,13 +469,13 @@ class SnippetsView(QWidget):
         order = [COLLECTED_SOURCE, *SUBJECT_FOLDERS]
         self.combo_source.blockSignals(True)
         self.combo_source.clear()
-        self.combo_source.addItem("全部来源", None)
+        self.combo_source.addItem("来源: 全部", None)
         for source in order:
             if source in present:
-                self.combo_source.addItem(source, source)
+                self.combo_source.addItem(f"来源: {source}", source)
         for source in sorted(present - set(order)):
             if source:
-                self.combo_source.addItem(source, source)
+                self.combo_source.addItem(f"来源: {source}", source)
         index = self.combo_source.findData(current)
         self.combo_source.setCurrentIndex(index if index >= 0 else 0)
         self.combo_source.blockSignals(False)
@@ -485,9 +484,9 @@ class SnippetsView(QWidget):
         current = self.combo_tag.currentData() if self.combo_tag.count() else None
         self.combo_tag.blockSignals(True)
         self.combo_tag.clear()
-        self.combo_tag.addItem("全部标签", None)
+        self.combo_tag.addItem("标签: 全部", None)
         for row in self.database.all_snippet_tags():
-            self.combo_tag.addItem(f"#{row['tag']}（{row['n']}）", row["tag"])
+            self.combo_tag.addItem(f"标签: #{row['tag']}（{row['n']}）", row["tag"])
         index = self.combo_tag.findData(current)
         self.combo_tag.setCurrentIndex(index if index >= 0 else 0)
         self.combo_tag.blockSignals(False)
@@ -531,6 +530,22 @@ class SnippetsView(QWidget):
         if self.combo_tag.count():
             self.combo_tag.setCurrentIndex(0)
 
+    def _populate_snippet_item(self, item, row):
+        item.setText(self._item_text(row))
+        item.setToolTip(self._tooltip(row))
+        if self.btn_view_mode.isChecked():
+            item.setData(PillListDelegate.TITLE_ROLE, None)
+            item.setData(PillListDelegate.PILL_ROLE, None)
+            return
+        item.setSizeHint(QSize(0, 64))
+        item.setData(PillListDelegate.TITLE_ROLE, self._display_title(row))
+        pills = [(row["source_subject"] or "未分类", False)]
+        for tag in row["tags"]:
+            pills.append((f"#{tag}", False))
+        if row["note"]:
+            pills.append(("有说明", True))
+        item.setData(PillListDelegate.PILL_ROLE, pills)
+
     def _render_list(self):
         keep = self._selected
         self.list_widget.blockSignals(True)   # 重建期间的选中变化不该去刷详情面板
@@ -543,7 +558,7 @@ class SnippetsView(QWidget):
         for row in self._shown[:MAX_ITEMS]:
             item = QListWidgetItem(self._item_text(row))
             item.setData(Qt.UserRole, row["path"])
-            item.setToolTip(self._tooltip(row))
+            self._populate_snippet_item(item, row)
             self.list_widget.addItem(item)
             self._items[row["path"]] = item
         self.list_widget.blockSignals(False)
@@ -572,7 +587,7 @@ class SnippetsView(QWidget):
             bits.append(" ".join("#" + tag for tag in row["tags"]))
         if row["note"]:
             bits.append("有说明")
-        return f"{title}\n    └─ " + " · ".join(bits)
+        return f"{title}\n" + " · ".join(bits)
 
     def _tooltip(self, row):
         lines = [self._display_title(row), row["path"]]
@@ -585,7 +600,7 @@ class SnippetsView(QWidget):
         bits = [f"共 {live} 张碎片"]
         active = []
         if self.combo_source.currentData() is not None:
-            active.append(self.combo_source.currentText())
+            active.append(str(self.combo_source.currentData()))
         if self.combo_tag.currentData():
             active.append(f"#{self.combo_tag.currentData()}")
         keyword = self.search_input.text().strip()
@@ -930,8 +945,7 @@ class SnippetsView(QWidget):
                 self.lbl_detail_name.setText(self._display_title(row))
                 item = self._items.get(old_path)
                 if item is not None:
-                    item.setText(self._item_text(row))
-                    item.setToolTip(self._tooltip(row))
+                    self._populate_snippet_item(item, row)
             return
 
         # 原文件检查
@@ -983,8 +997,7 @@ class SnippetsView(QWidget):
         if old_path in self._items:
             item = self._items.pop(old_path)
             item.setData(Qt.UserRole, new_path)
-            item.setText(self._item_text(row))
-            item.setToolTip(self._tooltip(row))
+            self._populate_snippet_item(item, row)
             self._items[new_path] = item
 
         # 更新右侧详情面板
@@ -1024,6 +1037,9 @@ class SnippetsView(QWidget):
         row = self._row_for(path)
         if row is not None:
             row["note"] = note
+            item = self._items.get(path)
+            if item is not None:
+                self._populate_snippet_item(item, row)
         if hint is not None:
             hint.setText("已保存")
 

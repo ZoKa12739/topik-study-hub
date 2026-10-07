@@ -277,7 +277,7 @@ QLabel#countdownSub {{
 }}
 
 QLabel#countdownNumber {{
-    color: #1F6B57;
+    color: #8A5F12;
     font-size: 28px;
     font-weight: 700;
 }}
@@ -305,30 +305,47 @@ QLabel#koreanText {{
 /* ---------- 面板与卡片 ---------- */
 /* DESIGN.md §3.4：1px 边框承担层级，无阴影；圆角 8px */
 
-QFrame#surface, QFrame#metricCard {{
+QFrame#surface {{
     background: #FFFFFF;
     border: 1px solid #DDE5DE;
     border-radius: 8px;
 }}
 
-QFrame#metricCard {{ min-height: 76px; }}
+QFrame#statusStrip {{
+    background: transparent;
+    border: none;
+}}
+
+QFrame#stripDivider {{
+    color: #DDE5DE;
+    background: #DDE5DE;
+    border: none;
+    min-width: 1px;
+    max-width: 1px;
+}}
+
+QFrame#metricCard {{
+    background: transparent;
+    border: none;
+    min-height: 44px;
+}}
 
 QLabel#metricValue {{
     color: #2A322D;
-    font-size: 24px;
+    font-size: 20px;
     font-weight: 600;
 }}
 
 /* 连续学习用强调色——给指标行一点色彩层次 */
 QLabel#metricValueAccent {{
     color: #1F6B57;
-    font-size: 24px;
+    font-size: 20px;
     font-weight: 600;
 }}
 
 QLabel#metricCaption {{
     color: #646E68;
-    font-size: 13px;
+    font-size: 12px;
 }}
 
 /* ---------- P0 本周回顾视图 Day Cells ---------- */
@@ -527,11 +544,11 @@ QPushButton#resumeRow {{
     background: transparent;
     border: 1px solid transparent;
     border-radius: 6px;
-    padding: 8px 10px;
+    padding: 6px 10px;
     text-align: left;
 }}
 
-QPushButton#resumeRow:hover {{ background: #F2F5F1; border-color: #DDE5DE; }}
+QPushButton#resumeRow:hover {{ background: #EDF1EC; border-color: #DDE5DE; }}
 QPushButton#resumeRow:pressed {{ background: #E3EBE5; }}
 
 /* 「今日已自动记录」条里可点的一个片段。分段可点 = 跳到产生它的模块，
@@ -587,33 +604,37 @@ QListWidget#taskList::item:selected {{
 }}
 
 QPushButton#taskDeleteButton {{
-    background: #FFFFFF;
-    border: 1px solid #DDE5DE;
+    background: transparent;
+    border: 1px solid transparent;
     border-radius: 6px;
-    color: #6A776F;
+    color: #98A29C;
     font-size: 13px;
     font-weight: 400;
-    padding: 2px 8px;
-    min-height: 22px;
+    padding: 0px;
+    min-width: 24px;
+    max-width: 24px;
+    min-height: 24px;
+    max-height: 24px;
 }}
 
 QPushButton#taskDeleteButton:hover {{
-    background: #FAF0EF;
-    border-color: #DFB5B0;
+    background: #EDF1EC;
+    border-color: #DDE5DE;
     color: #B4342B;
 }}
 
-/* ---------- P2 影子跟读：连续工作区与轻量 Toolbar ---------- */
+/* ---------- P2 影子跟读：全出血阅读区与透明边框控制栏 ---------- */
 
 QFrame#shadowingToolbar {{
     background: transparent;
     border: none;
+    border-bottom: 1px solid #DDE5DE;
 }}
 
 QFrame#shadowingListPanel {{
     background: #FFFFFF;
-    border: 1px solid #DDE5DE;
-    border-radius: 6px;
+    border: none;
+    border-radius: 0;
 }}
 
 /* 播放列表消除嵌套边框，与外层 panel 一体化 */
@@ -631,26 +652,32 @@ QListWidget#segmentList {{ background: #FFFFFF; }}
 QListWidget#trackList::item, QListWidget#segmentList::item {{
     padding: 6px 10px;
     margin: 1px 2px;
-    border-radius: 5px;
+    border-radius: 6px;
 }}
-QListWidget#trackList::item:hover {{ background: #EDF2ED; }}
-QListWidget#trackList::item:selected {{ background: #EBF1EC; color: #1F6B57; }}
+QListWidget#trackList::item:hover {{ background: #EDF1EC; }}
+QListWidget#trackList::item:selected {{ background: #E3EBE5; color: #1F6B57; }}
 
-/* ---------- PDF 阅读区（P2 对照区） ---------- */
-/* 消除 Card-in-Card 边框，让 PDF 阅读区以 1px 顶部分割线与标题栏衔接 */
+/* ---------- PDF 阅读区（P2 全出血对照区） ---------- */
+
+QFrame#pdfBleedPanel {{
+    background: #FFFFFF;
+    border: none;
+    border-radius: 0;
+}}
 
 QPdfView#pdfView {{
     background: #FAFBF9;
     border: none;
-    border-top: 1px solid #E6ECE6;
+    border-top: 1px solid #DDE5DE;
     border-radius: 0;
 }}
 
-/* P2 底部播放器卡片 */
+/* P2 底部播放器：平贴底部、1px 顶部分割线、去实心色块 */
 QFrame#shadowingPlayerCard {{
     background: #FFFFFF;
-    border: 1px solid #DDE5DE;
-    border-radius: 6px;
+    border: none;
+    border-top: 1px solid #DDE5DE;
+    border-radius: 0;
 }}
 
 QFrame#shadowingPlayerCard QPushButton {{
@@ -660,18 +687,45 @@ QFrame#shadowingPlayerCard QPushButton {{
     max-height: 28px;
 }}
 
-QFrame#shadowingPlayerCard QPushButton#primaryButton {{
-    padding: 4px 14px;
+QPushButton#transportBtn {{
+    background: transparent;
+    border: 1px solid #DDE5DE;
+    border-radius: 6px;
+    color: #2A322D;
+    padding: 4px 12px;
     font-size: 13px;
     min-height: 28px;
     max-height: 28px;
 }}
 
+QPushButton#transportBtn:hover {{
+    background: #EDF1EC;
+    border-color: #C6D2C9;
+}}
+
+QPushButton#transportBtn:pressed {{
+    background: #E3EBE5;
+}}
+
+QPushButton#transportBtn:disabled {{
+    background: transparent;
+    border-color: #DDE5DE;
+    color: #98A29C;
+}}
+
 QFrame#shadowingPlayerCard QPushButton#iconButton {{
-    padding: 3px 6px;
+    background: transparent;
+    border: 1px solid #DDE5DE;
+    border-radius: 6px;
+    padding: 3px 8px;
     font-size: 13px;
     min-height: 28px;
     max-height: 28px;
+}}
+
+QFrame#shadowingPlayerCard QPushButton#iconButton:hover {{
+    background: #EDF1EC;
+    border-color: #C6D2C9;
 }}
 
 QFrame#shadowingPlayerCard QComboBox {{
@@ -681,18 +735,21 @@ QFrame#shadowingPlayerCard QComboBox {{
     max-height: 26px;
 }}
 
-/* P2 工作区分隔条：轻量隐形，悬停反馈 */
+/* P2 全出血工作区分隔条：1px border 色，hover 时 border-strong */
 QSplitter#shadowingSplitter::handle {{
-    background: transparent;
+    background: #DDE5DE;
+}}
+QSplitter#shadowingSplitter::handle:horizontal {{
+    width: 1px;
 }}
 QSplitter#shadowingSplitter::handle:hover,
 QSplitter#shadowingSplitter::handle:pressed {{
-    background: #DDE5DE;
+    background: #C6D2C9;
 }}
 
 /* P2 收起/展开左栏：准备条最左边那个圆角小按钮 */
 QPushButton#edgeToggle {{
-    background: #FFFFFF;
+    background: transparent;
     border: 1px solid #DDE5DE;
     border-radius: 6px;
     color: #4C5650;
@@ -701,34 +758,37 @@ QPushButton#edgeToggle {{
 QPushButton#edgeToggle:hover {{ background: #EDF1EC; border-color: #C6D2C9; }}
 QPushButton#edgeToggle:pressed {{ background: #E3EBE5; }}
 
-/* ---------- 跟读录音（P2 底部右半边） ---------- */
+/* ---------- 跟读录音（P2 底部右半边：透明底 + 1px border，无实心色块） ---------- */
 
-/* 待录：安静的白底 + 语义色描边，旁边是"● 录音"的字样 */
 QPushButton#recordButton {{
-    background: #FFFFFF;
+    background: transparent;
+    border: 1px solid #DDE5DE;
+    border-radius: 6px;
+    color: #2A322D;
+    font-weight: 500;
+    padding: 4px 10px;
+}}
+QPushButton#recordButton:hover {{
+    background: #EDF1EC;
+    border-color: #C6D2C9;
+}}
+QPushButton#recordButton:pressed {{ background: #E3EBE5; }}
+
+/* 正在录：透明底 + state-danger 边框与文字 + 停止线性图标（彻底摒弃实心大色块） */
+QPushButton#recordButtonActive {{
+    background: transparent;
     border: 1px solid #B4342B;
-    border-radius: 7px;
+    border-radius: 6px;
     color: #B4342B;
     font-weight: 600;
-    padding: 5px 10px;
+    padding: 4px 10px;
 }}
-QPushButton#recordButton:hover {{ background: #FAF0EF; }}
-QPushButton#recordButton:pressed {{ background: #F5E2E0; }}
-
-/* 正在录：整块语义红 + 白字。**文字同时变成"■ 停止"**——
-   状态色不单独承载语义（DESIGN.md §3.1 纪律 3） */
-QPushButton#recordButtonActive {{
-    background: #B4342B;
-    border: 1px solid #B4342B;
-    border-radius: 7px;
-    color: #FFFFFF;
-    font-weight: 600;
-    padding: 5px 10px;
+QPushButton#recordButtonActive:hover {{
+    background: #EDF1EC;
+    border-color: #B4342B;
 }}
-QPushButton#recordButtonActive:hover {{ background: #9C2C24; }}
 
-/* 底部控制卡里分割"原音 | 录音"的竖线。QFrame 的线在部分样式下用调色板的文字色画，
-   所以 `color` 与 `background` 都给上，两边都能落到同一个灰 */
+/* 底部控制卡里分割"原音 | 录音"的竖线 */
 QFrame#cardDivider {{
     color: #DDE5DE;
     background: #DDE5DE;
@@ -1199,6 +1259,107 @@ QProgressBar#progressInline::chunk {{
     background: #1F6B57;
     border-radius: 2px;
 }}
+
+/* ---------- 核心基础组件扩展（Micro-Pill / Status Dot / Ghost Input / Flat Panel） ---------- */
+
+QLabel#microPill, QLabel#microPillFaint {{
+    background: #F2F5F1;
+    border: none;
+    border-radius: 10px;
+    padding: 2px 8px;
+    min-height: 16px;
+    max-height: 18px;
+    font-size: 12px;
+    color: #4C5650;
+}}
+
+QLabel#microPillFaint {{
+    color: #98A29C;
+}}
+
+QLabel#statusDotSuccess, QLabel#statusDotWarning,
+QLabel#statusDotDanger, QLabel#statusDotInfo, QLabel#statusDotMuted {{
+    min-width: 8px;
+    max-width: 8px;
+    min-height: 8px;
+    max-height: 8px;
+    border-radius: 4px;
+    border: none;
+}}
+
+QLabel#statusDotSuccess {{ background: #1F7A4D; }}
+QLabel#statusDotWarning {{ background: #8A6410; }}
+QLabel#statusDotDanger  {{ background: #B4342B; }}
+QLabel#statusDotInfo    {{ background: #1F5FA8; }}
+QLabel#statusDotMuted   {{ background: #98A29C; }}
+
+QLineEdit#ghostInput, QTextEdit#ghostInput {{
+    background: transparent;
+    border: 1px solid transparent;
+    border-radius: 6px;
+    padding: 6px 8px;
+    color: #2A322D;
+    font-size: 15px;
+}}
+
+QLineEdit#ghostInput:hover, QTextEdit#ghostInput:hover,
+QLineEdit#ghostInput:focus, QTextEdit#ghostInput:focus {{
+    border: 1px solid #1F6B57;
+}}
+
+QLineEdit#ghostInput:disabled, QTextEdit#ghostInput:disabled {{
+    background: transparent;
+    border: 1px solid transparent;
+    color: #98A29C;
+}}
+
+QFrame#ghostInputRow {{
+    background: transparent;
+    border: 1px solid transparent;
+    border-radius: 6px;
+}}
+
+QFrame#ghostInputRow:hover, QFrame#ghostInputRow[focused="true"] {{
+    border: 1px solid #1F6B57;
+}}
+
+QFrame#ghostInputRow QLineEdit#ghostInput,
+QFrame#ghostInputRow QLineEdit#ghostInput:hover,
+QFrame#ghostInputRow QLineEdit#ghostInput:focus {{
+    border: none;
+    background: transparent;
+    padding: 6px 4px;
+}}
+
+QFrame#commandBar {{
+    background: transparent;
+    border: none;
+}}
+
+QWidget#flatDetailPanel, QFrame#flatDetailPanel {{
+    background: transparent;
+    border: none;
+}}
+
+QSplitter#vaultSplitter::handle:horizontal,
+QSplitter#snippetsSplitter::handle:horizontal {{
+    background: #DDE5DE;
+    width: 1px;
+}}
+
+QSplitter#vaultSplitter::handle:horizontal:hover,
+QSplitter#snippetsSplitter::handle:horizontal:hover {{
+    background: #C6D2C9;
+}}
+
+QSplitter#snippetsDetailSplitter::handle:vertical {{
+    background: #DDE5DE;
+    height: 1px;
+}}
+
+QSplitter#snippetsDetailSplitter::handle:vertical:hover {{
+    background: #C6D2C9;
+}}
 """
 
 # 需要拼接运行时路径的规则单独追加，避免把整段样式表变成 f-string
@@ -1212,7 +1373,7 @@ QCheckBox::indicator:checked {{
 """
 
 # ---------------------------------------------------------------------------
-# 需要在**代码里**用色的地方：图标着色、QTableWidgetItem 的底色与文字色。
+# 需要在**代码里**用色的地方：图标着色、QTableWidgetItem 的底色与文字色、自定义 Delegate。
 #
 # 这几处没法走 QSS —— `QTableWidgetItem` 的颜色由数据角色承载，`icon()` 是
 # 把色值插进 SVG 字符串。为了让"颜色只有 `design/DESIGN.md` 一个来源"这条纪律
@@ -1220,7 +1381,13 @@ QCheckBox::indicator:checked {{
 # 取值与上面样式表里的内联值一一对应，改色时**两处一起改**。
 # ---------------------------------------------------------------------------
 
+BG_APP = "#F6F8F5"
 BG_SURFACE = "#FFFFFF"
+BG_ELEVATED = "#F2F5F1"
+BG_HOVER = "#EDF1EC"
+BG_SELECTED = "#E3EBE5"
+BORDER_COLOR = "#DDE5DE"
+BORDER_STRONG = "#C6D2C9"
 
 # DESIGN.md §3.1 的四个文字档
 TEXT_COLORS = {

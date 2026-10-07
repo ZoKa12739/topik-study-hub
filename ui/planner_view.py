@@ -14,10 +14,8 @@ from PySide6.QtCore import QSize, Qt, Signal
 from PySide6.QtWidgets import (
     QCheckBox,
     QFrame,
-    QGridLayout,
     QHBoxLayout,
     QLabel,
-    QLineEdit,
     QListWidget,
     QListWidgetItem,
     QPushButton,
@@ -25,7 +23,10 @@ from PySide6.QtWidgets import (
     QWidget,
 )
 
+from ui.components import GhostInputRow, MicroPill, StatusDot
+from ui.icons import icon
 from ui.style import restyle
+from ui.theme import TEXT_COLORS
 
 # 活动日志的类型 → 中文名（5.2）。与 `core/database.py` 的 `HIGHLIGHT_RANK` 是一对：
 # 那张表定"谁排前面"（口径，5.4），这张表定"叫什么"（措辞）。改一处时看一眼另一处。
@@ -125,24 +126,46 @@ class PlannerView(QWidget):
 
     def init_ui(self):
         layout = QVBoxLayout(self)
-        layout.setContentsMargins(32, 24, 32, 24)
-        layout.setSpacing(16)
+        layout.setContentsMargins(28, 20, 28, 20)
+        layout.setSpacing(12)
+
+        # 保留隐藏属性兼容外部访问，彻底删除顶部消费级大字号口号展示
+        self.page_title = QLabel()
+        self.page_title.setVisible(False)
+
+        # 顶栏：左侧（日期 + 压平的 4 指标状态带），右侧（保留独立卡片与温度色的倒计时卡片）
+        heading = QHBoxLayout()
+        heading.setSpacing(16)
+
+        top_left = QVBoxLayout()
+        top_left.setSpacing(6)
 
         eyebrow = QLabel(datetime.now().strftime("%Y 年 %m 月 %d 日 · 今日学习"))
         eyebrow.setObjectName("pageEyebrow")
-        layout.addWidget(eyebrow)
-        heading = QHBoxLayout()
-        heading.setSpacing(12)
-        title_block = QVBoxLayout()
-        self.page_title = QLabel("让今天的学习，有一个好开始")
-        self.page_title.setObjectName("pageTitle")
-        title_block.addWidget(self.page_title)
-        subtitle = QLabel("从一个小任务开始，学习记录会自动沉淀在这里。")
-        subtitle.setObjectName("pageSubtitle")
-        title_block.addWidget(subtitle)
-        heading.addLayout(title_block)
-        heading.addStretch()
+        top_left.addWidget(eyebrow)
 
+        # H2 状态带 (Status Strip)：4 个指标压平为一行，1px border 竖线分割，消除独立白框
+        self.status_strip = QFrame()
+        self.status_strip.setObjectName("statusStrip")
+        strip_layout = QHBoxLayout(self.status_strip)
+        strip_layout.setContentsMargins(0, 0, 0, 0)
+        strip_layout.setSpacing(4)
+
+        _, self.done_value = self._add_metric(strip_layout, "今日完成", "0 / 0", first=True)
+        strip_layout.addWidget(self._make_strip_divider())
+        _, self.streak_value = self._add_metric(strip_layout, "连续学习", "0 天")
+        self.streak_value.setObjectName("metricValueAccent")
+        strip_layout.addWidget(self._make_strip_divider())
+        _, self.week_value = self._add_metric(strip_layout, "本周进度", "0 / 7 天")
+        strip_layout.addWidget(self._make_strip_divider())
+        self.highlight_caption, self.highlight_value = self._add_metric(
+            strip_layout, "今日亮点", "—"
+        )
+        strip_layout.addStretch(1)
+        top_left.addWidget(self.status_strip)
+        heading.addLayout(top_left, 1)
+
+        # 保留 P0 的“温度”（DESIGN.md §6.1）：独立卡片形态，数字使用 accent-warm (#8A5F12)
         self.countdown_card = QFrame()
         self.countdown_card.setObjectName("countdownCard")
         cd_layout = QHBoxLayout(self.countdown_card)
@@ -174,77 +197,52 @@ class PlannerView(QWidget):
         self.countdown = QLabel()
         self.countdown.setVisible(False)
 
-        heading.addWidget(self.countdown_card)
+        heading.addWidget(self.countdown_card, 0, Qt.AlignVCenter)
         layout.addLayout(heading)
 
-        # H2 指标行（D1 的四张卡）：今日完成 / 连续学习 / 本周进度 / 今日亮点。
-        # 「累计完成」不在这里——它只增不减、不指向任何行动，降到了 H5（见 D1）。
-        metrics = QGridLayout()
-        metrics.setHorizontalSpacing(12)
-        _, self.done_value = self._add_metric(metrics, 0, "今日完成", "0 / 0")
-        _, self.streak_value = self._add_metric(metrics, 1, "连续学习", "0 天")
-        # 连续学习用强调色，给指标行一点色彩层次（DESIGN.md §3.6 B）。
-        # **整行只有这一处强调色**——四张卡都上色就等于都没上色。
-        self.streak_value.setObjectName("metricValueAccent")
-        _, self.week_value = self._add_metric(metrics, 2, "本周进度", "0 / 7 天")
-        self.highlight_caption, self.highlight_value = self._add_metric(
-            metrics, 3, "今日亮点", "—"
-        )
-        layout.addLayout(metrics)
-
-        body = QHBoxLayout()
-        body.setSpacing(16)
+        # 主体任务流占满全宽；「继续上次」解除独立侧栏卡片，作为置顶数据行汇入任务列表
         main_column = QVBoxLayout()
-        main_column.setSpacing(16)
+        main_column.setSpacing(12)
         main_column.addWidget(self._build_task_card(), 1)
-        # 5.3：位置是"P0 任务卡下方，一行，只读"。放在主列里而不是 H4 的侧栏，
-        # 是因为它按 5.3 的格式必须排成**一行**（跟读 24 分钟 · 过词 320 个 ·
-        # 专攻通过 12 个），300px 的侧栏放不下，硬塞就会折成三行、不再是一条。
         self.record_card = self._build_record_bar()
         main_column.addWidget(self.record_card)
-        body.addLayout(main_column, 1)
+        layout.addLayout(main_column, 1)
 
-        # H4 侧栏：只有「继续上次」一张卡。没有可继续的上下文时**整列隐藏**，
-        # 让任务卡占满整宽——而不是在右边留一条空白带。
-        self.resume_card = self._build_resume_card()
-        side_column = QVBoxLayout()
-        side_column.setSpacing(16)
-        side_column.addWidget(self.resume_card)
-        side_column.addStretch()
-        body.addLayout(side_column)
-        layout.addLayout(body, 1)
-
-        # H5 底部：本周概览。按"折叠或次屏"里的**次屏**落点——不进首屏抢位置，
-        # 但也不需要折叠控件的机械感。
+        # H5 底部：本周概览
         layout.addWidget(self._build_week_card())
 
     # ---- 构建 ----
 
-    def _add_metric(self, layout, column, caption, value):
-        """一张指标卡。返回 `(字幕 label, 数值 label)`——数值右侧那两张卡的字幕会被改写
-        （`今日亮点 · 跟读`），所以字幕也得拿得到。"""
+    def _make_strip_divider(self):
+        line = QFrame()
+        line.setObjectName("stripDivider")
+        line.setFrameShape(QFrame.VLine)
+        line.setFrameShadow(QFrame.Plain)
+        return line
+
+    def _add_metric(self, layout, caption, value, first=False):
+        """状态带里的一个指标单元。无白框，紧凑排布。"""
         card = QFrame()
         card.setObjectName("metricCard")
         card_layout = QVBoxLayout(card)
-        card_layout.setContentsMargins(16, 12, 16, 12)
-        card_layout.setSpacing(4)
+        left_pad = 0 if first else 16
+        card_layout.setContentsMargins(left_pad, 2, 16, 2)
+        card_layout.setSpacing(2)
         caption_label = QLabel(caption)
         caption_label.setObjectName("metricCaption")
-        caption_label.setMinimumHeight(18)
         value_label = QLabel(value)
         value_label.setObjectName("metricValue")
-        value_label.setMinimumHeight(30)
         card_layout.addWidget(caption_label)
         card_layout.addWidget(value_label)
-        layout.addWidget(card, 0, column)
+        layout.addWidget(card)
         return caption_label, value_label
 
     def _build_task_card(self):
         task_card = QFrame()
         task_card.setObjectName("surface")
         task_layout = QVBoxLayout(task_card)
-        task_layout.setContentsMargins(16, 16, 16, 16)
-        task_layout.setSpacing(12)
+        task_layout.setContentsMargins(16, 12, 16, 12)
+        task_layout.setSpacing(8)
         header = QHBoxLayout()
         section = QLabel("今日任务")
         section.setObjectName("sectionTitle")
@@ -255,16 +253,18 @@ class PlannerView(QWidget):
         header.addWidget(self.task_count)
         task_layout.addLayout(header)
 
-        add_row = QHBoxLayout()
-        self.task_input = QLineEdit()
-        self.task_input.setPlaceholderText("添加一个具体的小目标，例如：精听第 91 届第 12 题")
+        # 幽灵输入框：无实心「添加任务」按钮，左侧 plus 线性图标，回车直接添加
+        self.task_input_row = GhostInputRow(
+            "添加一个具体的小目标，按回车添加（例如：精听第 91 届第 12 题）",
+            glyph="plus",
+        )
+        self.task_input = self.task_input_row.line_edit
         self.task_input.returnPressed.connect(self.add_task)
-        add_button = QPushButton("添加任务")
-        add_button.setObjectName("primaryButton")
-        add_button.clicked.connect(self.add_task)
-        add_row.addWidget(self.task_input, 1)
-        add_row.addWidget(add_button)
-        task_layout.addLayout(add_row)
+        task_layout.addWidget(self.task_input_row)
+
+        # 「继续上次」置顶数据流：紧接幽灵输入框下方，带 state-warning 状态灯与微型胶囊
+        self.resume_card = self._build_resume_card()
+        task_layout.addWidget(self.resume_card)
 
         self.empty_label = QLabel("今天还没有任务。先写下最想完成的一件事吧。")
         self.empty_label.setObjectName("muted")
@@ -277,19 +277,15 @@ class PlannerView(QWidget):
         return task_card
 
     def _build_resume_card(self):
-        card = QFrame()
-        card.setObjectName("surface")
-        card.setFixedWidth(SIDE_COLUMN_WIDTH)
-        outer = QVBoxLayout(card)
-        outer.setContentsMargins(12, 12, 12, 12)
-        outer.setSpacing(4)
-        title = QLabel("继续上次")
-        title.setObjectName("sectionTitle")
-        outer.addWidget(title)
+        container = QWidget()
+        outer = QVBoxLayout(container)
+        outer.setContentsMargins(0, 0, 0, 0)
+        outer.setSpacing(2)
         self.resume_rows = QVBoxLayout()
+        self.resume_rows.setContentsMargins(0, 0, 0, 0)
         self.resume_rows.setSpacing(2)
         outer.addLayout(self.resume_rows)
-        return card
+        return container
 
     def _build_record_bar(self):
         card = QFrame()
@@ -452,38 +448,45 @@ class PlannerView(QWidget):
         self.resume_card.setVisible(bool(contexts))
 
     def _resume_row(self, context):
-        """「继续上次」的一行（2.5）。整行可点，所以用 `QPushButton`；文字放在它内部的
-        子控件里，因为 `QPushButton` 的 text 不换行，而这些标题在 300px 里必然折行。"""
+        """「继续上次」置顶数据行：带 state-warning 状态灯与微型胶囊，无缝汇入任务列表。"""
+        pills = []
         if context["kind"] == "audio":
             if context["playlist"] and context["segment"]:
                 headline = f"继续跟读《{context['playlist']}》第 {context['segment']} 段"
-                detail = f"{context['title']} · 上次听到 {_mmss(context['position_ms'])}"
+                if context.get("title"):
+                    pills.append(MicroPill(context["title"], faint=True))
+                pills.append(MicroPill(f"上次听到 {_mmss(context['position_ms'])}"))
             else:
                 headline = f"继续跟读《{context['title']}》"
-                detail = f"上次听到 {_mmss(context['position_ms'])}"
+                pills.append(MicroPill(f"上次听到 {_mmss(context['position_ms'])}"))
             handler = lambda _=False: self.open_shadowing.emit()   # noqa: E731
         else:
             headline = f"继续过词《{context['name']}》"
-            detail = (
-                f"已过 {context['passed']} / {context['total']}，"
-                f"{context['to_drill']} 个待专攻"
-            )
+            pills.append(MicroPill(f"已过 {context['passed']} / {context['total']}"))
+            if context.get("to_drill"):
+                pills.append(MicroPill(f"{context['to_drill']} 待专攻"))
             list_id = context["list_id"]
             handler = lambda _=False, value=list_id: self.open_vocab.emit(value)   # noqa: E731
 
         button = QPushButton()
         button.setObjectName("resumeRow")
         button.setCursor(Qt.PointingHandCursor)
-        inside = QVBoxLayout(button)
-        inside.setContentsMargins(0, 0, 0, 0)
-        inside.setSpacing(2)
+        button.setMinimumHeight(34)
+        inside = QHBoxLayout(button)
+        inside.setContentsMargins(6, 4, 6, 4)
+        inside.setSpacing(8)
+
+        dot = StatusDot("warning")
+        inside.addWidget(dot, 0, Qt.AlignVCenter)
+
         head = QLabel(headline)
-        head.setWordWrap(True)
-        inside.addWidget(head)
-        under = QLabel(detail)
-        under.setObjectName("muted")
-        under.setWordWrap(True)
-        inside.addWidget(under)
+        head.setAttribute(Qt.WA_TransparentForMouseEvents, True)
+        inside.addWidget(head, 1, Qt.AlignVCenter)
+
+        for pill in pills:
+            pill.setAttribute(Qt.WA_TransparentForMouseEvents, True)
+            inside.addWidget(pill, 0, Qt.AlignVCenter)
+
         button.clicked.connect(handler)
         return button
 
@@ -547,7 +550,7 @@ class PlannerView(QWidget):
                     amt = acts["material_opened"]["amount"]
                     stat_lbl.setText(f"资料 {amt}次")
                 else:
-                    stat_lbl.setText("✓ 已学")
+                    stat_lbl.setText("已学")
 
                 # 详细提示
                 lines = [f"{day_info['date']} {day_info['weekday']}" + (" (今天)" if is_today else "")]
@@ -609,12 +612,14 @@ class PlannerView(QWidget):
             checkbox.toggled.connect(
                 lambda checked, task_id=task["id"]: self.toggle_task(task_id, checked)
             )
-            delete_button = QPushButton("删除")
+            delete_button = QPushButton()
             delete_button.setObjectName("taskDeleteButton")
+            delete_button.setIcon(icon("x", TEXT_COLORS["faint"], 14))
+            delete_button.setToolTip("删除任务")
             delete_button.clicked.connect(lambda _, task_id=task["id"]: self.delete_task(task_id))
             row_layout.addWidget(checkbox, 1)
             row_layout.addWidget(delete_button)
-            item.setSizeHint(QSize(0, 36))
+            item.setSizeHint(QSize(0, 34))
             self.task_list.addItem(item)
             self.task_list.setItemWidget(item, row)
 

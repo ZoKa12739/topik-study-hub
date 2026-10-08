@@ -598,6 +598,8 @@ class ShadowingView(QWidget):
     # ==================================================================
 
     def init_ui(self):
+        self.setObjectName("panePage")
+        self.setAttribute(Qt.WA_StyledBackground, True)
         layout = QVBoxLayout(self)
         layout.setContentsMargins(0, 0, 0, 0)
         layout.setSpacing(0)

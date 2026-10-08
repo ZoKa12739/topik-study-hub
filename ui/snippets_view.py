@@ -189,16 +189,23 @@ class SnippetsView(QWidget):
     # ==================================================================
 
     def init_ui(self):
+        self.setObjectName("panePage")
+        self.setAttribute(Qt.WA_StyledBackground, True)
         layout = QVBoxLayout(self)
-        layout.setContentsMargins(24, 16, 24, 20)
-        layout.setSpacing(12)
+        layout.setContentsMargins(0, 0, 0, 0)
+        layout.setSpacing(0)
 
         layout.addWidget(self._build_toolbar())
 
+        sub_bar = QFrame()
+        sub_bar.setObjectName("paneSubBar")
+        sub_lay = QHBoxLayout(sub_bar)
+        sub_lay.setContentsMargins(20, 6, 20, 6)
         self.lbl_status = QLabel("")
         self.lbl_status.setObjectName("faint")
         self.lbl_status.setWordWrap(True)
-        layout.addWidget(self.lbl_status)
+        sub_lay.addWidget(self.lbl_status)
+        layout.addWidget(sub_bar)
 
         self.banner = Banner()
         self.banner.action_clicked.connect(self._on_banner_action)
@@ -219,7 +226,7 @@ class SnippetsView(QWidget):
         frame = QFrame()
         frame.setObjectName("commandBar")
         bar = QHBoxLayout(frame)
-        bar.setContentsMargins(0, 0, 0, 8)
+        bar.setContentsMargins(20, 10, 20, 10)
         bar.setSpacing(8)
 
         title = QLabel("知识碎片")

@@ -23,7 +23,7 @@ import shutil
 import subprocess
 from datetime import date
 
-from PySide6.QtCore import QDate, QUrl, Signal
+from PySide6.QtCore import QDate, Qt, QUrl, Signal
 from PySide6.QtGui import QDesktopServices
 from PySide6.QtMultimedia import QMediaDevices
 from PySide6.QtWidgets import (
@@ -96,29 +96,38 @@ class SettingsView(QWidget):
     # ---------------------------------------------------------------- 布局
 
     def init_ui(self):
+        self.setObjectName("panePage")
+        self.setAttribute(Qt.WA_StyledBackground, True)
         outer = QVBoxLayout(self)
         outer.setContentsMargins(0, 0, 0, 0)
+        outer.setSpacing(0)
+
+        cmd_bar = QFrame()
+        cmd_bar.setObjectName("commandBar")
+        cmd_row = QHBoxLayout(cmd_bar)
+        cmd_row.setContentsMargins(24, 12, 24, 12)
+        cmd_row.setSpacing(10)
+        title = QLabel("设置与数据")
+        title.setObjectName("sectionTitle")
+        cmd_row.addWidget(title)
+        subtitle = QLabel("考试信息、资料位置、外部工具与数据备份。改动立即生效并写入本地数据库。")
+        subtitle.setObjectName("faint")
+        cmd_row.addWidget(subtitle)
+        cmd_row.addStretch()
+        outer.addWidget(cmd_bar)
 
         scroll = QScrollArea()
         scroll.setWidgetResizable(True)
         scroll.setObjectName("settingsScroll")
-        outer.addWidget(scroll)
+        outer.addWidget(scroll, 1)
 
         content = QWidget()
+        content.setObjectName("panePage")
+        content.setAttribute(Qt.WA_StyledBackground, True)
         scroll.setWidget(content)
         layout = QVBoxLayout(content)
-        layout.setContentsMargins(32, 24, 32, 24)
-        layout.setSpacing(16)
-
-        eyebrow = QLabel("设置与数据")
-        eyebrow.setObjectName("pageEyebrow")
-        layout.addWidget(eyebrow)
-        title = QLabel("配置与备份")
-        title.setObjectName("pageTitle")
-        layout.addWidget(title)
-        subtitle = QLabel("考试信息、资料位置、外部工具与数据备份。改动立即生效并写入本地数据库。")
-        subtitle.setObjectName("pageSubtitle")
-        layout.addWidget(subtitle)
+        layout.setContentsMargins(0, 0, 0, 24)
+        layout.setSpacing(0)
 
         self.banner = Banner()
         layout.addWidget(self.banner)
@@ -133,10 +142,9 @@ class SettingsView(QWidget):
         layout.addStretch()
 
     def _group(self, layout, title, hint=None):
-        card = QFrame()
-        card.setObjectName("surface")
+        card = QWidget()
         box = QVBoxLayout(card)
-        box.setContentsMargins(16, 16, 16, 16)
+        box.setContentsMargins(28, 20, 28, 20)
         box.setSpacing(10)
         heading = QLabel(title)
         heading.setObjectName("sectionTitle")
@@ -147,6 +155,10 @@ class SettingsView(QWidget):
             note.setWordWrap(True)
             box.addWidget(note)
         layout.addWidget(card)
+        div = QFrame()
+        div.setObjectName("paneDivider")
+        div.setFixedHeight(1)
+        layout.addWidget(div)
         return box
 
     def _field_row(self, box, caption, control, button=None, caption_width=96):

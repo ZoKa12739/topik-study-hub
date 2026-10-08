@@ -217,7 +217,7 @@ class MainWindow(QMainWindow):
     NAV_PAGES = ("今日学习", "智能单词仓", "影子跟读", "TOPIK 资料库", "知识碎片")
     SETTINGS_INDEX = 5
     RESIZE_MARGIN = 6
-    DRAG_BAR_HEIGHT = 56
+    DRAG_BAR_HEIGHT = 36
 
     def __init__(self):
         super().__init__()
@@ -242,29 +242,27 @@ class MainWindow(QMainWindow):
         central_widget = QWidget()
         central_widget.setObjectName("pageRoot")
         self.setCentralWidget(central_widget)
-        main_layout = QHBoxLayout(central_widget)
-        main_layout.setContentsMargins(0, 0, 0, 0)
-        main_layout.setSpacing(0)
+        root_layout = QVBoxLayout(central_widget)
+        root_layout.setContentsMargins(0, 0, 0, 0)
+        root_layout.setSpacing(0)
 
-        sidebar = QFrame()
-        sidebar.setObjectName("sidebar")
-        sidebar.setFixedWidth(228)
-        self.sidebar_frame = sidebar
-        sidebar_layout = QVBoxLayout(sidebar)
-        sidebar_layout.setContentsMargins(12, 16, 12, 12)
-        sidebar_layout.setSpacing(0)
+        # 顶部 QQ 式 36px 通栏（左侧品牌图标+应用名，右侧悬浮最小化/最大化/关闭）
+        self.top_bar = QFrame()
+        self.top_bar.setObjectName("topTitleBar")
+        self.top_bar.setFixedHeight(self.DRAG_BAR_HEIGHT)
+        top_layout = QHBoxLayout(self.top_bar)
+        top_layout.setContentsMargins(12, 0, 12, 0)
+        top_layout.setSpacing(0)
 
-        # 品牌区域（物理隔离、像素级垂直对齐线、16px 品牌字号）
         brand_container = QWidget()
-        brand_container.setMinimumHeight(26)
         brand_layout = QHBoxLayout(brand_container)
         brand_layout.setContentsMargins(0, 0, 0, 0)
         brand_layout.setSpacing(0)
 
         icon_box = QWidget()
-        icon_box.setFixedWidth(29)
+        icon_box.setFixedWidth(28)
         ib_lay = QHBoxLayout(icon_box)
-        ib_lay.setContentsMargins(9, 0, 2, 0)
+        ib_lay.setContentsMargins(6, 0, 4, 0)
         ib_lay.setSpacing(0)
 
         icon_label = QLabel()
@@ -281,12 +279,25 @@ class MainWindow(QMainWindow):
 
         brand_title = QLabel("TOPIK Study Hub")
         brand_title.setObjectName("brandTitle")
-        brand_title.setMinimumHeight(24)
         brand_layout.addWidget(brand_title)
         brand_layout.addStretch()
 
-        sidebar_layout.addWidget(brand_container)
-        sidebar_layout.addSpacing(24)
+        top_layout.addWidget(brand_container)
+        top_layout.addStretch(1)
+        root_layout.addWidget(self.top_bar)
+
+        # 下方主工作区：左侧导航栏 + 右侧 1px border-strong 包裹的整块 #FFFFFF 大白板
+        main_layout = QHBoxLayout()
+        main_layout.setContentsMargins(0, 0, 0, 0)
+        main_layout.setSpacing(0)
+
+        sidebar = QFrame()
+        sidebar.setObjectName("sidebar")
+        sidebar.setFixedWidth(220)
+        self.sidebar_frame = sidebar
+        sidebar_layout = QVBoxLayout(sidebar)
+        sidebar_layout.setContentsMargins(12, 8, 12, 12)
+        sidebar_layout.setSpacing(0)
 
         self.sidebar = NavigationWidget()
         sidebar_layout.addWidget(self.sidebar)
@@ -315,8 +326,11 @@ class MainWindow(QMainWindow):
         sidebar_layout.addWidget(footer)
 
         self.stacked_widget = QStackedWidget()
+        self.stacked_widget.setObjectName("mainPane")
+        self.stacked_widget.setContentsMargins(0, 0, 0, 0)
         main_layout.addWidget(sidebar)
         main_layout.addWidget(self.stacked_widget, 1)
+        root_layout.addLayout(main_layout, 1)
 
         self.setup_tabs()
         # 导航行 → 内容区。忽略 -1（清空选中，切到设置页时会发生）
@@ -515,8 +529,8 @@ class MainWindow(QMainWindow):
             return
         self.window_controls.adjustSize()
         mx, my = self._maximized_frame_margins()
-        x = max(0, self.width() - self.window_controls.width() - 10 - mx)
-        self.window_controls.move(x, 8 + my)
+        x = max(0, self.width() - self.window_controls.width() - 8 - mx)
+        self.window_controls.move(x, 4 + my)
         self.window_controls.raise_()
 
     def _minimize_window(self):

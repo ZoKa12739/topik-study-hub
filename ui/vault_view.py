@@ -181,9 +181,11 @@ class VaultView(QWidget):
     # ==================================================================
 
     def init_ui(self):
+        self.setObjectName("panePage")
+        self.setAttribute(Qt.WA_StyledBackground, True)
         layout = QVBoxLayout(self)
-        layout.setContentsMargins(24, 16, 24, 20)
-        layout.setSpacing(12)
+        layout.setContentsMargins(0, 0, 0, 0)
+        layout.setSpacing(0)
 
         layout.addWidget(self._build_toolbar())
 
@@ -208,7 +210,7 @@ class VaultView(QWidget):
         frame = QFrame()
         frame.setObjectName("commandBar")
         bar = QHBoxLayout(frame)
-        bar.setContentsMargins(0, 0, 0, 8)
+        bar.setContentsMargins(20, 10, 20, 10)
         bar.setSpacing(8)
 
         title = QLabel("资料索引")
@@ -250,9 +252,10 @@ class VaultView(QWidget):
 
     def _build_progress_row(self):
         """索引进行中的行内反馈（4.4 状态表：加载时要有进度，且不阻塞 UI）。"""
-        self._progress_box = QWidget()
+        self._progress_box = QFrame()
+        self._progress_box.setObjectName("paneSubBar")
         row = QHBoxLayout(self._progress_box)
-        row.setContentsMargins(0, 0, 0, 0)
+        row.setContentsMargins(20, 6, 20, 6)
         row.setSpacing(10)
 
         self.progress = InlineProgress()

@@ -418,21 +418,13 @@ class VocabView(QWidget):
     # ==================================================================
 
     def init_ui(self):
+        self.setObjectName("panePage")
+        self.setAttribute(Qt.WA_StyledBackground, True)
         layout = QVBoxLayout(self)
-        layout.setContentsMargins(24, 20, 24, 20)
-        layout.setSpacing(12)
+        layout.setContentsMargins(0, 0, 0, 0)
+        layout.setSpacing(0)
 
-        eyebrow = QLabel("智能单词仓")
-        eyebrow.setObjectName("pageEyebrow")
-        layout.addWidget(eyebrow)
-        title = QLabel("词表与过词")
-        title.setObjectName("pageTitle")
-        layout.addWidget(title)
-        subtitle = QLabel("先过一遍标出不会的词，再专攻它们。笔记、状态与断点都保存在本机。")
-        subtitle.setObjectName("pageSubtitle")
-        layout.addWidget(subtitle)
-
-        layout.addLayout(self._build_action_bar())
+        layout.addWidget(self._build_action_bar())
 
         self.banner = Banner()
         self.banner.action_clicked.connect(self._on_banner_action)
@@ -448,8 +440,16 @@ class VocabView(QWidget):
         self._setup_shortcuts()
 
     def _build_action_bar(self):
-        bar = QHBoxLayout()
+        frame = QFrame()
+        frame.setObjectName("commandBar")
+        bar = QHBoxLayout(frame)
+        bar.setContentsMargins(20, 10, 20, 10)
         bar.setSpacing(8)
+
+        title = QLabel("智能单词仓")
+        title.setObjectName("sectionTitle")
+        bar.addWidget(title)
+        bar.addSpacing(8)
 
         self.combo_list = WordListComboBox()
         self.combo_list.setMinimumWidth(190)
@@ -502,7 +502,7 @@ class VocabView(QWidget):
         self.search_input.setFixedWidth(180)
         self.search_input.textChanged.connect(self._on_search_changed)
         bar.addWidget(self.search_input)
-        return bar
+        return frame
 
     # ---------------------------------------------------------------- 浏览
 
@@ -510,15 +510,22 @@ class VocabView(QWidget):
         page = QWidget()
         box = QVBoxLayout(page)
         box.setContentsMargins(0, 0, 0, 0)
-        box.setSpacing(10)
+        box.setSpacing(0)
 
         # 词表元信息条：词表名 · N 个词 · 已过 X · 待专攻 M
+        meta_bar = QFrame()
+        meta_bar.setObjectName("paneSubBar")
+        meta_row = QHBoxLayout(meta_bar)
+        meta_row.setContentsMargins(20, 6, 20, 6)
         self.lbl_meta = QLabel("")
         self.lbl_meta.setObjectName("muted")
-        box.addWidget(self.lbl_meta)
+        meta_row.addWidget(self.lbl_meta)
+        meta_row.addStretch()
+        box.addWidget(meta_bar)
 
         splitter = QSplitter(Qt.Horizontal)
         splitter.setObjectName("vocabSplitter")
+        splitter.setHandleWidth(1)
         splitter.setChildrenCollapsible(False)
 
         self.table = QTableWidget(0, 4)
@@ -553,7 +560,7 @@ class VocabView(QWidget):
 
     def _build_detail_card(self):
         card = QFrame()
-        card.setObjectName("surface")
+        card.setObjectName("flatDetailPanel")
         box = QVBoxLayout(card)
         box.setContentsMargins(16, 16, 16, 16)
         box.setSpacing(8)

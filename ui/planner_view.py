@@ -125,16 +125,21 @@ class PlannerView(QWidget):
         self.refresh()
 
     def init_ui(self):
+        self.setObjectName("panePage")
+        self.setAttribute(Qt.WA_StyledBackground, True)
         layout = QVBoxLayout(self)
-        layout.setContentsMargins(28, 20, 28, 20)
-        layout.setSpacing(12)
+        layout.setContentsMargins(0, 0, 0, 0)
+        layout.setSpacing(0)
 
         # 保留隐藏属性兼容外部访问，彻底删除顶部消费级大字号口号展示
         self.page_title = QLabel()
         self.page_title.setVisible(False)
 
-        # 顶栏：左侧（日期 + 压平的 4 指标状态带），右侧（保留独立卡片与温度色的倒计时卡片）
-        heading = QHBoxLayout()
+        # 顶栏面板：全宽贴边，底部 1px 贯穿分割线；左侧状态带，右侧去壳融入倒计时（保留 #8A5F12 暖金数字）
+        header_pane = QFrame()
+        header_pane.setObjectName("paneHeader")
+        heading = QHBoxLayout(header_pane)
+        heading.setContentsMargins(24, 14, 24, 14)
         heading.setSpacing(16)
 
         top_left = QVBoxLayout()
@@ -165,11 +170,13 @@ class PlannerView(QWidget):
         top_left.addWidget(self.status_strip)
         heading.addLayout(top_left, 1)
 
-        # 保留 P0 的“温度”（DESIGN.md §6.1）：独立卡片形态，数字使用 accent-warm (#8A5F12)
+        heading.addWidget(self._make_strip_divider())
+
+        # 倒计时去壳融入顶栏右侧，数字保留 accent-warm (#8A5F12)
         self.countdown_card = QFrame()
         self.countdown_card.setObjectName("countdownCard")
         cd_layout = QHBoxLayout(self.countdown_card)
-        cd_layout.setContentsMargins(16, 8, 16, 8)
+        cd_layout.setContentsMargins(8, 2, 0, 2)
         cd_layout.setSpacing(14)
 
         cd_left = QVBoxLayout()
@@ -198,20 +205,27 @@ class PlannerView(QWidget):
         self.countdown.setVisible(False)
 
         heading.addWidget(self.countdown_card, 0, Qt.AlignVCenter)
-        layout.addLayout(heading)
+        layout.addWidget(header_pane)
 
-        # 主体任务流占满全宽；「继续上次」解除独立侧栏卡片，作为置顶数据行汇入任务列表
-        main_column = QVBoxLayout()
-        main_column.setSpacing(12)
-        main_column.addWidget(self._build_task_card(), 1)
+        # 主体任务流去壳直铺大白板；「继续上次」作为置顶数据行汇入任务列表
+        layout.addWidget(self._build_task_card(), 1)
         self.record_card = self._build_record_bar()
-        main_column.addWidget(self.record_card)
-        layout.addLayout(main_column, 1)
+        layout.addWidget(self.record_card)
 
-        # H5 底部：本周概览
+        # 1px 贯穿横线分割任务流与本周回顾
+        layout.addWidget(self._make_pane_divider())
+
+        # H5 底部：本周概览（去壳直铺大白板）
         layout.addWidget(self._build_week_card())
 
     # ---- 构建 ----
+
+    def _make_pane_divider(self):
+        line = QFrame()
+        line.setObjectName("paneDivider")
+        line.setFrameShape(QFrame.HLine)
+        line.setFrameShadow(QFrame.Plain)
+        return line
 
     def _make_strip_divider(self):
         line = QFrame()
@@ -238,10 +252,9 @@ class PlannerView(QWidget):
         return caption_label, value_label
 
     def _build_task_card(self):
-        task_card = QFrame()
-        task_card.setObjectName("surface")
+        task_card = QWidget()
         task_layout = QVBoxLayout(task_card)
-        task_layout.setContentsMargins(16, 12, 16, 12)
+        task_layout.setContentsMargins(24, 16, 24, 12)
         task_layout.setSpacing(8)
         header = QHBoxLayout()
         section = QLabel("今日任务")
@@ -288,21 +301,25 @@ class PlannerView(QWidget):
         return container
 
     def _build_record_bar(self):
-        card = QFrame()
-        card.setObjectName("surface")
+        card = QWidget()
         outer = QVBoxLayout(card)
-        outer.setContentsMargins(16, 10, 16, 10)
+        outer.setContentsMargins(0, 0, 0, 0)
         outer.setSpacing(0)
+        outer.addWidget(self._make_pane_divider())
+        body = QWidget()
+        body_layout = QVBoxLayout(body)
+        body_layout.setContentsMargins(24, 10, 24, 10)
+        body_layout.setSpacing(0)
         self.record_row = QHBoxLayout()
         self.record_row.setSpacing(0)
-        outer.addLayout(self.record_row)
+        body_layout.addLayout(self.record_row)
+        outer.addWidget(body)
         return card
 
     def _build_week_card(self):
-        card = QFrame()
-        card.setObjectName("surface")
+        card = QWidget()
         inner = QVBoxLayout(card)
-        inner.setContentsMargins(16, 12, 16, 12)
+        inner.setContentsMargins(24, 14, 24, 18)
         inner.setSpacing(8)
 
         # 顶部标题与累计完成（保留 D1 决策下右侧的累计完成）

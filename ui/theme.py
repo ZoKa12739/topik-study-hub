@@ -48,9 +48,24 @@ APP_STYLESHEET = f"""
     font-family: {FONT_STACK};
 }}
 
-QMainWindow, QWidget#pageRoot, QStackedWidget {{
-    background: #F6F8F5;
+QMainWindow, QWidget#pageRoot {{
+    background: #F4F7F4;
     color: #2A322D;
+}}
+
+QFrame#topTitleBar {{
+    background: #F4F7F4;
+    border: none;
+}}
+
+QStackedWidget, QWidget#panePage {{
+    background: #FFFFFF;
+    color: #2A322D;
+}}
+
+QStackedWidget#mainPane {{
+    background: #FFFFFF;
+    border-top: 1px solid #C6D2C9;
 }}
 
 QWidget {{ color: #2A322D; }}
@@ -64,11 +79,11 @@ QToolTip {{
 }}
 
 /* ---------- 侧边栏 ---------- */
-/* 视觉收敛：与主背景极小色差、极淡分割线、紧凑导航、低存在感浅色高亮 */
+/* 视觉收敛：与右侧大白板之间以 1px border-strong (#C6D2C9) 锐利贯穿切割 */
 
 QFrame#sidebar {{
     background: #F4F7F4;
-    border-right: 1px solid #E6ECE6;
+    border-right: 1px solid #C6D2C9;
 }}
 
 QFrame#sidebarDivider {{
@@ -79,7 +94,7 @@ QFrame#sidebarDivider {{
 
 QLabel#brandTitle {{
     color: #2A322D;
-    font-size: 16px;
+    font-size: 14px;
     font-weight: 600;
     letter-spacing: -0.2px;
 }}
@@ -258,11 +273,11 @@ QLabel#shortcutKey {{
     padding: 2px 8px;
 }}
 
-/* 倒计时小卡片：模块化数字展示 */
+/* 倒计时模块：去壳融入顶栏右侧，数字保留 #8A5F12 暖金 */
 QFrame#countdownCard {{
-    background: #FFFFFF;
-    border: 1px solid #DDE5DE;
-    border-radius: 8px;
+    background: transparent;
+    border: none;
+    border-radius: 0;
 }}
 
 QLabel#countdownTarget {{
@@ -644,9 +659,13 @@ QListWidget#trackList {{
     border-radius: 0;
 }}
 
-/* P3 资料库、P4 碎片列表与分段 */
+/* P3 资料库、P4 碎片列表与分段：面板内无嵌套外框 */
 QListWidget#vaultList, QListWidget#snippetList,
-QListWidget#segmentList {{ background: #FFFFFF; }}
+QListWidget#segmentList {{
+    background: #FFFFFF;
+    border: none;
+    border-radius: 0;
+}}
 
 /* P2 曲目行与分段行收紧留白 */
 QListWidget#trackList::item, QListWidget#segmentList::item {{
@@ -819,13 +838,13 @@ QCheckBox::indicator:checked {{
     border-color: #1F6B57;
 }}
 
-/* ---------- 表格（P1 词表） ---------- */
+/* ---------- 表格（P1 词表：面板内无嵌套边框） ---------- */
 
 QTableWidget, QTableView {{
     background: #FFFFFF;
     alternate-background-color: #FFFFFF;
-    border: 1px solid #DDE5DE;
-    border-radius: 8px;
+    border: none;
+    border-radius: 0;
     color: #2A322D;
     font-size: 15px;
     gridline-color: transparent;
@@ -847,26 +866,25 @@ QTableWidget::item:selected, QTableView::item:selected {{
 QHeaderView {{
     background: transparent;
     border: none;
-    border-top-left-radius: 7px;
-    border-top-right-radius: 7px;
+    border-radius: 0;
 }}
 
 QHeaderView::section {{
     background: #FFFFFF;
     color: #646E68;
     border: none;
-    border-bottom: 1px solid #C6D2C9;
+    border-bottom: 1px solid #DDE5DE;
     padding: 7px 8px;
     font-size: 14px;
     font-weight: 500;
 }}
 
 QHeaderView::section:first {{
-    border-top-left-radius: 7px;
+    border-top-left-radius: 0;
 }}
 
 QHeaderView::section:last {{
-    border-top-right-radius: 7px;
+    border-top-right-radius: 0;
 }}
 
 QHeaderView::section:hover {{ color: #2A322D; }}
@@ -931,15 +949,15 @@ QCalendarWidget QAbstractItemView:enabled {{
     selection-color: #2A322D;
 }}
 
-/* ---------- 滚动区域（P4 图片预览、P5 设置页） ---------- */
+/* ---------- 滚动区域（P4 图片预览、P5 设置页：无嵌套外框） ---------- */
 
-QScrollArea, QScrollArea#previewScroll {{
-    background: transparent;
-    border: 1px solid #DDE5DE;
-    border-radius: 6px;
+QScrollArea, QScrollArea#previewScroll, QScrollArea#detailScroll, QScrollArea#settingsScroll {{
+    background: #FFFFFF;
+    border: none;
+    border-radius: 0;
 }}
 
-QScrollArea > QWidget > QWidget {{ background: transparent; }}
+QScrollArea > QWidget > QWidget {{ background: #FFFFFF; }}
 
 /* ---------- 滚动条 ---------- */
 /* 去掉两端箭头 */
@@ -1331,22 +1349,41 @@ QFrame#ghostInputRow QLineEdit#ghostInput:focus {{
     padding: 6px 4px;
 }}
 
-QFrame#commandBar {{
-    background: transparent;
+QFrame#commandBar, QFrame#paneHeader {{
+    background: #FFFFFF;
     border: none;
+    border-bottom: 1px solid #DDE5DE;
+    border-radius: 0;
+}}
+
+QFrame#paneSubBar {{
+    background: #FFFFFF;
+    border: none;
+    border-bottom: 1px solid #DDE5DE;
+    border-radius: 0;
+}}
+
+QFrame#paneDivider {{
+    background: #DDE5DE;
+    border: none;
+    min-height: 1px;
+    max-height: 1px;
 }}
 
 QWidget#flatDetailPanel, QFrame#flatDetailPanel {{
-    background: transparent;
+    background: #FFFFFF;
     border: none;
+    border-radius: 0;
 }}
 
+QSplitter#vocabSplitter::handle:horizontal,
 QSplitter#vaultSplitter::handle:horizontal,
 QSplitter#snippetsSplitter::handle:horizontal {{
     background: #DDE5DE;
     width: 1px;
 }}
 
+QSplitter#vocabSplitter::handle:horizontal:hover,
 QSplitter#vaultSplitter::handle:horizontal:hover,
 QSplitter#snippetsSplitter::handle:horizontal:hover {{
     background: #C6D2C9;

@@ -160,6 +160,7 @@ Things that are easy to get wrong here:
 
 - **Lock reference audio at recording start (`self.recorded_ref_audio_path`)**: users may switch playlists or tracks before/after recording. `start_recording()` captures `self.current_audio_path` so `FFmpegWorker` mixes against the actual track that was shadowed, and falls back to saving the pure vocal recording if the reference stream is invalid or `amix` fails.
 - **Recording filename convention**: named after the active playlist and question range + attempt number (`影子跟读 {届数}届{起止题号}第{N}次.mp3`), with a direct toolbar button to open `data/recordings/`.
+- **Playlist status restraint & 70% listen count**: Only the single currently active track (`item["track_id"] == self.track_id`) displays the `warning` status dot and `"在听"` micro-pill; all other tracks hide the status dot and `"未听/在听"` text to prevent visual noise. Listen count (`已听 N 次`) is computed without schema changes via `_listen_count(item)` (`listened_ms // int(duration_ms * 0.7)`), counting 1 time per 70% of track duration actually listened.
 
 ### P3 资料库的索引
 
@@ -261,13 +262,18 @@ Runtime state changes need `ui/style.py`'s `restyle()`. Qt does **not** re-evalu
 
 Layout & QSS sizing gotchas:
 
+- **Pane-based (整版一体化面板) layout over Card-based shells**:
+  - `MainWindow` uses a 36px full-width top drag bar (`QFrame#topTitleBar`, `#F4F7F4`) housing the brand icon/title on the left and window controls (`- □ ×`) on the right.
+  - Below `#topTitleBar`, the left `#sidebar` (`#F4F7F4`) and right `QStackedWidget#mainPane` (`#FFFFFF`) meet at a sharp 1px `#C6D2C9` (`border-strong`) border.
+  - All page roots (`P0`–`P5`) use `objectName="panePage"`, `ContentsMargins(0, 0, 0, 0)`, and `spacing = 0`. Do not wrap page sections in rounded `QFrame#surface` cards with grey outer margins (except `P1`'s centered `QFrame#vocabCard` in 过词/专攻 modes); use borderless `QWidget` / `#flatDetailPanel` sections divided by 1px full-bleed `QFrame#paneDivider` lines (`#DDE5DE`) or 1px `QSplitter` handles (`#DDE5DE`, hover `#C6D2C9`).
+- **Core high-density micro-components (`ui/components.py`)**:
+  - `MicroPill`: 20–22px height, `border-radius: 999px`, `#F2F5F1` (`bg-elevated`), borderless, used for metadata tags and `PillListDelegate` second-row items in P2/P3/P4.
+  - `StatusDot`: 8×8px dot (`border-radius: 4px`) using `STATE_COLORS`, used only where status is actionable and mutually exclusive.
+  - `GhostInput` / `GhostInputRow` / `GhostTextEdit`: transparent background and border at rest, 1px `#DDE5DE` on hover, 1px `#1F6B57` (`accent`) on focus, used in P0 task input and P4 detail forms.
+- **QComboBox option purity**: Never prepend field names to every option in a `QComboBox` (e.g., `"科目: 写作"`, `"标签: #积累"`). Use a semantic default first item (`"全部科目"`, `"全部标签"`, `"全部来源"`) and pure option texts (`"写作"`, `"#积累 (5)"`).
 - **Compact buttons must override global `QPushButton` padding**: `theme.py` sets `padding: 6px 14px` on `QPushButton` by default. Any button with a fixed small size (e.g., 28×28 zoom buttons or `46×24` row action buttons) will clip its text (`..`) unless given a dedicated `objectName` with `padding: 0px` or `padding: 2px 8px`.
 - **Sidebar vertical alignment & visual hierarchy**:
-  - Brand bar (`#brandBar`) is isolated from navigation items by a `24px` (`space-6`) bottom gap.
   - Navigation items are grouped under low-contrast `QLabel#navSectionTitle` (`#98A29C`, `13px`, `margin-top: 20px; margin-bottom: 8px`) for `学习` and `资料`.
-  - Brand icon (`16px`) and `brandTitle` (`16px`, `#2A322D`) align on the exact same vertical centerline and left text edge as the sidebar `QListWidget` items.
-- **QTableWidget rounded corners require transparent corner button & styled header**: Setting `border-radius` on `QTableWidget` is clipped by default square subcontrols. Always specify `QTableCornerButton::section { background: transparent; border: none; }` and add matching `border-top-left-radius: 7px` / `border-top-right-radius: 7px` to `QHeaderView::section:first` and `QHeaderView::section:last`.
-- **Splitters between bordered rounded cards must use transparent handles**: When adjacent panels have their own `border: 1px solid #DDE5DE; border-radius: 8px;`, a 1px colored splitter handle will poke out past the top and bottom corner arcs. Use `QSplitter::handle { background: transparent; } QSplitter::handle:horizontal { width: 8px; }` (token `space-2`) to keep a clean 8px gutter and avoid line protrusion while preserving drag resize behavior.
 - **Temporary verification files**: Never leave `scratch/` directories or temporary screenshots in the repository root; use the conversation artifact `scratch/` directory or clean up before committing.
 
 ### Fonts

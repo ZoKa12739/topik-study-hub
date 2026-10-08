@@ -476,13 +476,13 @@ class SnippetsView(QWidget):
         order = [COLLECTED_SOURCE, *SUBJECT_FOLDERS]
         self.combo_source.blockSignals(True)
         self.combo_source.clear()
-        self.combo_source.addItem("来源: 全部", None)
+        self.combo_source.addItem("全部来源", None)
         for source in order:
             if source in present:
-                self.combo_source.addItem(f"来源: {source}", source)
+                self.combo_source.addItem(source, source)
         for source in sorted(present - set(order)):
             if source:
-                self.combo_source.addItem(f"来源: {source}", source)
+                self.combo_source.addItem(source, source)
         index = self.combo_source.findData(current)
         self.combo_source.setCurrentIndex(index if index >= 0 else 0)
         self.combo_source.blockSignals(False)
@@ -491,9 +491,9 @@ class SnippetsView(QWidget):
         current = self.combo_tag.currentData() if self.combo_tag.count() else None
         self.combo_tag.blockSignals(True)
         self.combo_tag.clear()
-        self.combo_tag.addItem("标签: 全部", None)
+        self.combo_tag.addItem("全部标签", None)
         for row in self.database.all_snippet_tags():
-            self.combo_tag.addItem(f"标签: #{row['tag']}（{row['n']}）", row["tag"])
+            self.combo_tag.addItem(f"#{row['tag']} ({row['n']})", row["tag"])
         index = self.combo_tag.findData(current)
         self.combo_tag.setCurrentIndex(index if index >= 0 else 0)
         self.combo_tag.blockSignals(False)

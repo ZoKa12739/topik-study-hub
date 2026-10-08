@@ -1397,6 +1397,13 @@ QSplitter#snippetsDetailSplitter::handle:vertical {{
 QSplitter#snippetsDetailSplitter::handle:vertical:hover {{
     background: #C6D2C9;
 }}
+
+QLabel#microGroupTitle {{
+    font-size: 12px;
+    font-weight: 600;
+    color: #738278;
+    padding: 4px 0 2px 0;
+}}
 """
 
 # 需要拼接运行时路径的规则单独追加，避免把整段样式表变成 f-string

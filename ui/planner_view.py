@@ -266,6 +266,10 @@ class PlannerView(QWidget):
         header.addWidget(self.task_count)
         task_layout.addLayout(header)
 
+        todo_group_title = QLabel("待办事项")
+        todo_group_title.setObjectName("microGroupTitle")
+        task_layout.addWidget(todo_group_title)
+
         # 幽灵输入框：无实心「添加任务」按钮，左侧 plus 线性图标，回车直接添加
         self.task_input_row = GhostInputRow(
             "添加一个具体的小目标，按回车添加（例如：精听第 91 届第 12 题）",
@@ -275,10 +279,6 @@ class PlannerView(QWidget):
         self.task_input.returnPressed.connect(self.add_task)
         task_layout.addWidget(self.task_input_row)
 
-        # 「继续上次」置顶数据流：紧接幽灵输入框下方，带 state-warning 状态灯与微型胶囊
-        self.resume_card = self._build_resume_card()
-        task_layout.addWidget(self.resume_card)
-
         self.empty_label = QLabel("今天还没有任务。先写下最想完成的一件事吧。")
         self.empty_label.setObjectName("muted")
         self.empty_label.setAlignment(Qt.AlignCenter)
@@ -287,13 +287,21 @@ class PlannerView(QWidget):
         self.task_list.setObjectName("taskList")
         self.task_list.setMinimumHeight(80)
         task_layout.addWidget(self.task_list, 1)
+
+        # 「继续上次」分组：放在自定义 Todo 列表下方，带 1px 分割线、微型组标题、state-warning 状态灯与微型胶囊
+        self.resume_card = self._build_resume_card()
+        task_layout.addWidget(self.resume_card)
         return task_card
 
     def _build_resume_card(self):
         container = QWidget()
         outer = QVBoxLayout(container)
-        outer.setContentsMargins(0, 0, 0, 0)
-        outer.setSpacing(2)
+        outer.setContentsMargins(0, 4, 0, 0)
+        outer.setSpacing(6)
+        outer.addWidget(self._make_pane_divider())
+        resume_title = QLabel("继续上次")
+        resume_title.setObjectName("microGroupTitle")
+        outer.addWidget(resume_title)
         self.resume_rows = QVBoxLayout()
         self.resume_rows.setContentsMargins(0, 0, 0, 0)
         self.resume_rows.setSpacing(2)

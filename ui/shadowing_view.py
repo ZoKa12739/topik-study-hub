@@ -1116,6 +1116,17 @@ class ShadowingView(QWidget):
         self._sync_track_selection()
         self._update_empty_state()
 
+    def _listen_count(self, item):
+        """按累计实际收听时长满该音频总时长的 70% 计为 1 次。"""
+        duration = item.get("duration_ms") or 0
+        if duration <= 0:
+            return 0
+        listened = item.get("listened_ms") or 0
+        if item.get("track_id") == self.track_id:
+            listened += getattr(self, "track_unlogged_ms", 0)
+        threshold = max(1, int(duration * 0.7))
+        return int(listened // threshold)
+
     def _populate_track_entry(self, entry, index, item):
         title = f"{index}. {elide(item['title'], 22)}"
         entry.setText(self._track_line(index, item))
@@ -1124,30 +1135,41 @@ class ShadowingView(QWidget):
         entry.setData(PillListDelegate.FAINT_ROLE, missing)
         if missing:
             entry.setForeground(QColor(TEXT_COLORS["faint"]))
-            entry.setData(PillListDelegate.DOT_ROLE, TRACK_STATUS_DOTS["missing"])
+            entry.setData(PillListDelegate.DOT_ROLE, TRACK_STATUS_DOTS.get("missing", "danger"))
             entry.setData(
                 PillListDelegate.PILL_ROLE,
                 [("缺失", True), ("文件已不在音频库中", True)],
             )
         else:
-            _, label = TRACK_STATUS_LABELS.get(item["status"], TRACK_STATUS_LABELS[None])
+            is_active = item["track_id"] == self.track_id
+            count = self._listen_count(item)
             duration = stamp(item["duration_ms"]) if item["duration_ms"] else "—"
             entry.setData(
                 PillListDelegate.DOT_ROLE,
-                TRACK_STATUS_DOTS.get(item["status"], TRACK_STATUS_DOTS[None]),
+                "warning" if is_active else None,
             )
-            entry.setData(
-                PillListDelegate.PILL_ROLE,
-                [(label, False), (duration, True)],
-            )
+            pills = []
+            if is_active:
+                pills.append(("在听", False))
+            if count > 0:
+                pills.append((f"已听 {count} 次", is_active))
+            pills.append((duration, True))
+            entry.setData(PillListDelegate.PILL_ROLE, pills)
 
     def _track_line(self, index, item):
-        mark, label = TRACK_STATUS_LABELS.get(item["status"], TRACK_STATUS_LABELS[None])
         if not audio.exists_in_library(item["path"], AUDIO_DIR):
             second = "缺失 · 文件已不在音频库中"
         else:
+            is_active = item["track_id"] == self.track_id
+            count = self._listen_count(item)
             duration = stamp(item["duration_ms"]) if item["duration_ms"] else "—"
-            second = f"{mark} {label} · {duration}"
+            bits = []
+            if is_active:
+                bits.append("在听")
+            if count > 0:
+                bits.append(f"已听 {count} 次")
+            bits.append(duration)
+            second = " · ".join(bits)
         return f"{index}. {elide(item['title'], 22)}\n{second}"
 
     def _sync_track_selection(self):
@@ -1164,9 +1186,10 @@ class ShadowingView(QWidget):
         if summary is None:
             self.lbl_list_meta.setText("还没有播放列表")
             return
+        listened_tracks = sum(1 for item in self._items if self._listen_count(item) > 0)
         self.lbl_list_meta.setText(
             f"{summary['name']} · {summary['track_count']} 个音频 · "
-            f"已完成 {summary['done_count']}"
+            f"已听 {listened_tracks}"
         )
 
     def _update_empty_state(self):
@@ -1588,12 +1611,12 @@ class ShadowingView(QWidget):
             self.btn_clear_ab.setEnabled(False)
 
     def _reload_track_row(self):
-        """只刷新当前这一行的文字（状态点/时长/缺失标记），重建整表代价更大。"""
+        """刷新列表项的状态灯、已听次数与时长胶囊（不 clear 列表，直接就地更新数据角色）。"""
         self._items = self.database.playlist_items(self.playlist_id)
-        row = self.track_list.currentRow()
-        item = self._current_item()
-        if item is not None and 0 <= row < self.track_list.count():
-            self._populate_track_entry(self.track_list.item(row), row + 1, item)
+        for row, item in enumerate(self._items):
+            if row < self.track_list.count():
+                self._populate_track_entry(self.track_list.item(row), row + 1, item)
+        self.track_list.viewport().update()
         self._update_list_meta()
         self._update_track_meta()
 
@@ -1608,9 +1631,11 @@ class ShadowingView(QWidget):
         if item is None:
             self.lbl_track_meta.setText("")
             return
-        _, label = TRACK_STATUS_LABELS.get(item["status"], TRACK_STATUS_LABELS[None])
-        listened = item["listened_ms"] or 0
-        parts = [label]
+        count = self._listen_count(item)
+        listened = (item["listened_ms"] or 0) + getattr(self, "track_unlogged_ms", 0)
+        parts = ["在听"]
+        if count > 0:
+            parts.append(f"已听 {count} 次")
         if listened:
             parts.append(f"已跟读 {stamp(listened)}")
         if item["loop_count"]:
@@ -1730,8 +1755,17 @@ class ShadowingView(QWidget):
         else:
             if playing and position >= self.last_position:
                 delta = position - self.last_position
+                item = self._current_item()
+                prev_count = self._listen_count(item) if item else 0
                 self.unlogged_ms += delta
                 self.track_unlogged_ms += delta
+                if item and self._listen_count(item) != prev_count:
+                    row = self.track_list.currentRow()
+                    if 0 <= row < self.track_list.count():
+                        self._populate_track_entry(self.track_list.item(row), row + 1, item)
+                        self.track_list.viewport().update()
+                    self._update_list_meta()
+                    self._update_track_meta()
             self.last_position = position
 
         if not self.slider.isSliderDown():

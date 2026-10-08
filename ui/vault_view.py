@@ -218,15 +218,15 @@ class VaultView(QWidget):
         bar.addWidget(title)
 
         self.combo_subject = QComboBox()
-        self.combo_subject.addItem("科目: 全部", "全部")
+        self.combo_subject.addItem("全部科目", "全部")
         for s in SUBJECT_FOLDERS:
-            self.combo_subject.addItem(f"科目: {s}", s)
-        self.combo_subject.setMinimumWidth(112)
+            self.combo_subject.addItem(s, s)
+        self.combo_subject.setMinimumWidth(104)
         self.combo_subject.currentIndexChanged.connect(self.apply_filter)
         bar.addWidget(self.combo_subject)
 
         self.combo_tag = QComboBox()
-        self.combo_tag.setMinimumWidth(120)
+        self.combo_tag.setMinimumWidth(112)
         self.combo_tag.currentIndexChanged.connect(self.apply_filter)
         bar.addWidget(self.combo_tag)
 
@@ -237,8 +237,8 @@ class VaultView(QWidget):
 
         self.combo_sort = QComboBox()
         for text, key in _SORT_MODES:
-            self.combo_sort.addItem(f"排序: {text}", key)
-        self.combo_sort.setMinimumWidth(154)
+            self.combo_sort.addItem(text, key)
+        self.combo_sort.setMinimumWidth(124)
         self.combo_sort.currentIndexChanged.connect(self.apply_filter)
         bar.addWidget(self.combo_sort)
 
@@ -526,9 +526,9 @@ class VaultView(QWidget):
         current = self.combo_tag.currentData() if self.combo_tag.count() else None
         self.combo_tag.blockSignals(True)
         self.combo_tag.clear()
-        self.combo_tag.addItem("标签: 全部", None)
+        self.combo_tag.addItem("全部标签", None)
         for row in self.database.all_material_tags():
-            self.combo_tag.addItem(f"标签: #{row['tag']}（{row['n']}）", row["tag"])
+            self.combo_tag.addItem(f"#{row['tag']} ({row['n']})", row["tag"])
         index = self.combo_tag.findData(current)
         self.combo_tag.setCurrentIndex(index if index >= 0 else 0)
         self.combo_tag.blockSignals(False)

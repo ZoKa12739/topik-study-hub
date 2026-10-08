@@ -58,14 +58,20 @@ QFrame#topTitleBar {{
     border: none;
 }}
 
-QStackedWidget, QWidget#panePage {{
-    background: #FFFFFF;
+QStackedWidget {{
+    background: transparent;
     color: #2A322D;
 }}
 
-QStackedWidget#mainPane {{
+QStackedWidget#mainContentIsland, QStackedWidget#mainPane {{
     background: #FFFFFF;
-    border-top: 1px solid #C6D2C9;
+    border: 1px solid #DDE5DE;
+    border-radius: 10px;
+}}
+
+QWidget#panePage {{
+    background: transparent;
+    color: #2A322D;
 }}
 
 QWidget {{ color: #2A322D; }}
@@ -79,11 +85,11 @@ QToolTip {{
 }}
 
 /* ---------- 侧边栏 ---------- */
-/* 视觉收敛：与右侧大白板之间以 1px border-strong (#C6D2C9) 锐利贯穿切割 */
+/* 岛屿式布局：侧边栏融入全局底色，去除右边框，由右侧白岛自身 1px 细边框与 10px 圆角承接层级 */
 
 QFrame#sidebar {{
     background: #F4F7F4;
-    border-right: 1px solid #C6D2C9;
+    border: none;
 }}
 
 QFrame#sidebarDivider {{
@@ -647,7 +653,7 @@ QFrame#shadowingToolbar {{
 }}
 
 QFrame#shadowingListPanel {{
-    background: #FFFFFF;
+    background: transparent;
     border: none;
     border-radius: 0;
 }}
@@ -662,7 +668,7 @@ QListWidget#trackList {{
 /* P3 资料库、P4 碎片列表与分段：面板内无嵌套外框 */
 QListWidget#vaultList, QListWidget#snippetList,
 QListWidget#segmentList {{
-    background: #FFFFFF;
+    background: transparent;
     border: none;
     border-radius: 0;
 }}
@@ -679,7 +685,7 @@ QListWidget#trackList::item:selected {{ background: #E3EBE5; color: #1F6B57; }}
 /* ---------- PDF 阅读区（P2 全出血对照区） ---------- */
 
 QFrame#pdfBleedPanel {{
-    background: #FFFFFF;
+    background: transparent;
     border: none;
     border-radius: 0;
 }}
@@ -693,7 +699,7 @@ QPdfView#pdfView {{
 
 /* P2 底部播放器：平贴底部、1px 顶部分割线、去实心色块 */
 QFrame#shadowingPlayerCard {{
-    background: #FFFFFF;
+    background: transparent;
     border: none;
     border-top: 1px solid #DDE5DE;
     border-radius: 0;
@@ -841,8 +847,8 @@ QCheckBox::indicator:checked {{
 /* ---------- 表格（P1 词表：面板内无嵌套边框） ---------- */
 
 QTableWidget, QTableView {{
-    background: #FFFFFF;
-    alternate-background-color: #FFFFFF;
+    background: transparent;
+    alternate-background-color: transparent;
     border: none;
     border-radius: 0;
     color: #2A322D;
@@ -870,7 +876,7 @@ QHeaderView {{
 }}
 
 QHeaderView::section {{
-    background: #FFFFFF;
+    background: transparent;
     color: #646E68;
     border: none;
     border-bottom: 1px solid #DDE5DE;
@@ -952,12 +958,12 @@ QCalendarWidget QAbstractItemView:enabled {{
 /* ---------- 滚动区域（P4 图片预览、P5 设置页：无嵌套外框） ---------- */
 
 QScrollArea, QScrollArea#previewScroll, QScrollArea#detailScroll, QScrollArea#settingsScroll {{
-    background: #FFFFFF;
+    background: transparent;
     border: none;
     border-radius: 0;
 }}
 
-QScrollArea > QWidget > QWidget {{ background: #FFFFFF; }}
+QScrollArea > QWidget > QWidget {{ background: transparent; }}
 
 /* ---------- 滚动条 ---------- */
 /* 去掉两端箭头 */
@@ -1350,14 +1356,14 @@ QFrame#ghostInputRow QLineEdit#ghostInput:focus {{
 }}
 
 QFrame#commandBar, QFrame#paneHeader {{
-    background: #FFFFFF;
+    background: transparent;
     border: none;
     border-bottom: 1px solid #DDE5DE;
     border-radius: 0;
 }}
 
 QFrame#paneSubBar {{
-    background: #FFFFFF;
+    background: transparent;
     border: none;
     border-bottom: 1px solid #DDE5DE;
     border-radius: 0;
@@ -1371,7 +1377,7 @@ QFrame#paneDivider {{
 }}
 
 QWidget#flatDetailPanel, QFrame#flatDetailPanel {{
-    background: #FFFFFF;
+    background: transparent;
     border: none;
     border-radius: 0;
 }}

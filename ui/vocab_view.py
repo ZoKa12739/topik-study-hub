@@ -38,7 +38,7 @@
 import os
 from pathlib import Path
 
-from PySide6.QtCore import QEvent, QPoint, QSize, QTimer, Qt, Signal
+from PySide6.QtCore import QEasingCurve, QEvent, QPoint, QPropertyAnimation, QSize, QTimer, Qt, Signal
 from PySide6.QtGui import QColor, QFont, QKeySequence, QShortcut
 from PySide6.QtWidgets import (
     QApplication,
@@ -350,6 +350,7 @@ class VocabView(QWidget):
         self._drill_cleared = 0
         self._drill_round_counted = False
         self._summary_action = None
+        self._card_anim = None
 
         self._pending_editor = None
         self._pending_hint = None
@@ -390,6 +391,19 @@ class VocabView(QWidget):
         try:
             if event is not None and event.type() == QEvent.Type.MouseButtonPress:
                 if self.isVisible():
+                    if (
+                        watched is getattr(self, "lbl_pass_cn", None)
+                        and event.button() == Qt.MouseButton.LeftButton
+                        and self._mode == self.MODE_PASS
+                        and 0 <= self._pass_index < len(self._pass_rows)
+                    ):
+                        if not self._revealed:
+                            self._just_revealed_by_click = True
+                            self._revealed = True
+                            self._render_pass_meaning()
+                            return True
+                        self._just_revealed_by_click = False
+
                     # 点击笔记框外部区域时取消聚焦，清除焦点边框与输入光标
                     for editor in (getattr(self, "txt_notes", None), getattr(self, "txt_drill_notes", None)):
                         if editor is not None and editor.hasFocus():
@@ -400,6 +414,8 @@ class VocabView(QWidget):
                     for lbl in (
                         getattr(self, "lbl_detail_kr", None),
                         getattr(self, "lbl_detail_cn", None),
+                        getattr(self, "lbl_pass_kr", None),
+                        getattr(self, "lbl_pass_cn", None),
                         getattr(self, "lbl_drill_kr", None),
                         getattr(self, "lbl_drill_cn", None),
                     ):
@@ -407,6 +423,20 @@ class VocabView(QWidget):
                             if hasattr(lbl, "hasSelectedText") and lbl.hasSelectedText():
                                 lbl.setSelection(0, 0)
                             lbl.clearFocus()
+            elif event is not None and event.type() == QEvent.Type.MouseButtonRelease:
+                if (
+                    self.isVisible()
+                    and watched is getattr(self, "lbl_pass_cn", None)
+                    and event.button() == Qt.MouseButton.LeftButton
+                    and self._mode == self.MODE_PASS
+                    and 0 <= self._pass_index < len(self._pass_rows)
+                ):
+                    if getattr(self, "_just_revealed_by_click", False):
+                        self._just_revealed_by_click = False
+                    elif self._revealed and not self.lbl_pass_cn.hasSelectedText():
+                        self._revealed = False
+                        self._render_pass_meaning()
+                        return True
         except Exception:
             pass
         finally:
@@ -656,6 +686,7 @@ class VocabView(QWidget):
         card.setMinimumWidth(640)
         card.setMaximumWidth(760)
         card.setMinimumHeight(440)
+        self.pass_card = card
 
         box = QVBoxLayout(card)
         box.setContentsMargins(28, 22, 28, 22)
@@ -755,6 +786,7 @@ class VocabView(QWidget):
         card.setMinimumWidth(640)
         card.setMaximumWidth(760)
         card.setMinimumHeight(440)
+        self.drill_card = card
         box = QVBoxLayout(card)
         box.setContentsMargins(28, 22, 28, 22)
         box.setSpacing(10)
@@ -949,7 +981,7 @@ class VocabView(QWidget):
             if 0 <= self._drill_index < len(self._drill_rows):
                 korean = self._drill_rows[self._drill_index]["korean"]
         if korean:
-            self.speaker.speak(korean)
+            self.speaker.speak(korean, manual=True)
 
     def refresh_audio_device(self):
         """P5 音频输出设备变更时同步到单词发音播放器。"""
@@ -1388,7 +1420,7 @@ class VocabView(QWidget):
             actions.append((action, field))
         chosen = menu.exec(self.table.viewport().mapToGlobal(pos))
         if chosen is speak_action and entry is not None:
-            self.speaker.speak(entry["korean"])
+            self.speaker.speak(entry["korean"], manual=True)
             return
         for action, field in actions:
             if chosen is action:
@@ -1595,6 +1627,8 @@ class VocabView(QWidget):
         if finished:
             if hasattr(self, "lbl_pass_meta"):
                 self.lbl_pass_meta.setText(f"《{self.current_list_name()}》")
+            self.lbl_pass_cn.setTextInteractionFlags(Qt.TextSelectableByMouse)
+            self.lbl_pass_cn.unsetCursor()
             restyle(self.lbl_pass_cn, "quizMeaning")
             self.lbl_pass_cn.setText(
                 "切到「专攻」去攻被标出来的词，或者直接再过一遍。"
@@ -1619,18 +1653,48 @@ class VocabView(QWidget):
             return
         row = self._pass_rows[self._pass_index]
         meaning_display = row["meaning"] or "（这份词表没有释义）"
+        self.lbl_pass_cn.setCursor(Qt.PointingHandCursor)
         if self._revealed:
+            self.lbl_pass_cn.setTextInteractionFlags(Qt.TextSelectableByMouse)
             restyle(self.lbl_pass_cn, "quizMeaning")
             self.lbl_pass_cn.setText(meaning_display)
         else:
+            self.lbl_pass_cn.setTextInteractionFlags(Qt.NoTextInteraction)
             restyle(self.lbl_pass_cn, "faint")
-            self.lbl_pass_cn.setText("释义已遮住 · 按 Space 揭示")
+            self.lbl_pass_cn.setText("释义已遮住 · 点击或按 Space 揭示")
 
     def _toggle_reveal(self):
         if not self._keyboard_ok() or self._pass_index >= len(self._pass_rows):
             return
         self._revealed = not self._revealed
         self._render_pass_meaning()
+
+    def _animate_card_step(self, card: QWidget, direction: int = 1):
+        """卡片切换微动效：direction=1 向前切换，direction=-1 撤销回退。"""
+        if not self.isVisible() or card is None or not card.isVisible():
+            return
+
+        # 高频连按即时打断并归位到上一轮终点，防止卡顿和坐标累积偏移
+        if getattr(self, "_card_anim", None) is not None:
+            if self._card_anim.state() == QPropertyAnimation.Running:
+                prev_target = self._card_anim.targetObject()
+                end_val = self._card_anim.endValue()
+                self._card_anim.stop()
+                if isinstance(prev_target, QWidget) and isinstance(end_val, QPoint):
+                    prev_target.move(end_val)
+
+        parent = card.parentWidget()
+        if parent is not None and parent.layout() is not None:
+            parent.layout().activate()
+        target_pos = card.pos()
+        start_pos = QPoint(target_pos.x() + (14 * direction), target_pos.y())
+
+        self._card_anim = QPropertyAnimation(card, b"pos", self)
+        self._card_anim.setDuration(150)
+        self._card_anim.setStartValue(start_pos)
+        self._card_anim.setEndValue(target_pos)
+        self._card_anim.setEasingCurve(QEasingCurve.OutCubic)
+        self._card_anim.start()
 
     def _judge(self, state):
         """`1`/`2`/`3` 与三个按钮的共同入口。"""
@@ -1665,6 +1729,7 @@ class VocabView(QWidget):
         self._show_pass_current()
         if hasattr(self, "btn_pass_undo"):
             self.btn_pass_undo.setEnabled(bool(self._undo_stack))
+        self._animate_card_step(self.pass_card, direction=1)
 
     def _undo_pass(self):
         """`Ctrl+Z` 退回上一个词（流程 B 第 7 条）：状态与断点一起还原。"""
@@ -1683,6 +1748,7 @@ class VocabView(QWidget):
         self._show_pass_current()
         if hasattr(self, "btn_pass_undo"):
             self.btn_pass_undo.setEnabled(bool(self._undo_stack))
+        self._animate_card_step(self.pass_card, direction=-1)
 
     def _update_pass_progress(self):
         """`已过 320 / 1400 · 已标记 87`。
@@ -1766,6 +1832,8 @@ class VocabView(QWidget):
         self._drill_index += 1
         self._show_drill_current()
         self._sync_drill_undo_button()
+        if self._drill_index < len(self._drill_rows):
+            self._animate_card_step(self.drill_card, direction=1)
 
     def _undo_drill(self):
         """回退上一个专攻的词 (Ctrl+Z 或 点击回退按钮)。"""
@@ -1790,6 +1858,7 @@ class VocabView(QWidget):
             self.drill_stack.setCurrentIndex(0)
         self._show_drill_current()
         self._sync_drill_undo_button()
+        self._animate_card_step(self.drill_card, direction=-1)
 
     def _sync_drill_undo_button(self):
         if hasattr(self, "btn_drill_undo"):

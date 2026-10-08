@@ -59,7 +59,7 @@ import shlex
 import time
 from datetime import datetime
 
-from PySide6.QtCore import QPointF, QSize, QThread, QTimer, Qt, QUrl, Signal
+from PySide6.QtCore import QEasingCurve, QPoint, QPointF, QPropertyAnimation, QSize, QThread, QTimer, Qt, QUrl, Signal
 from PySide6.QtGui import QColor, QDesktopServices, QKeySequence, QShortcut
 from PySide6.QtMultimedia import (
     QAudioInput,
@@ -541,6 +541,7 @@ class ShadowingView(QWidget):
         self._banner_action = None
         self._closed = False
         self._collapsed = False
+        self._drawer_anim = None
         self._active_pdf = None
         self.pdf_zoom = None
         self._loading_pages = False
@@ -706,7 +707,12 @@ class ShadowingView(QWidget):
         panel.setObjectName("shadowingListPanel")
         panel.setMinimumWidth(EXPANDED_MIN_WIDTH)
 
-        outer = QVBoxLayout(panel)
+        panel_outer = QVBoxLayout(panel)
+        panel_outer.setContentsMargins(0, 0, 0, 0)
+        panel_outer.setSpacing(0)
+
+        self.list_drawer_content = QWidget(panel)
+        outer = QVBoxLayout(self.list_drawer_content)
         outer.setContentsMargins(0, 0, 0, 0)
         outer.setSpacing(0)
 
@@ -779,6 +785,7 @@ class ShadowingView(QWidget):
         box.addLayout(foot)
 
         outer.addWidget(body, 1)
+        panel_outer.addWidget(self.list_drawer_content, 1)
         return panel
 
     def _build_workspace(self):
@@ -1276,34 +1283,87 @@ class ShadowingView(QWidget):
     def toggle_list_panel(self):
         # 用 `_collapsed` 而不是 `isVisible()`：父窗口自己没显示时，所有子控件的
         # `isVisible()` 都是 False，拿它当状态会把"折叠"和"窗口没开"混成一件事。
-        self._apply_collapsed(not self._collapsed)
+        self._apply_collapsed(not self._collapsed, animate=self.isVisible())
         self.database.set_setting(COLLAPSED_KEY, "1" if self._collapsed else "0")
 
-    def _apply_collapsed(self, collapsed):
+    def _apply_collapsed(self, collapsed, animate=False):
         """折叠 = **整块隐藏**左栏（验收意见：不要压成细长条）。
 
         控制它的按钮是工作区左上角那个悬浮小片，不随左栏一起藏，所以收起之后随时
         能点回来。展开时按记住的宽度还原，不会一展开就变成默认值。
+        当 `animate=True` 时，采用「单次定宽 + 内部容器 pos 横向滑入/滑出」，
+        避免逐帧改变宽度引发右侧双栏 PDF 高频重排卡顿。
         """
         self._collapsed = bool(collapsed)
-        if self._collapsed:
-            self._expanded_width = max(self.list_panel.width(), EXPANDED_MIN_WIDTH)
-            self.list_panel.hide()
-        else:
+
+        if getattr(self, "_drawer_anim", None) is not None:
+            if self._drawer_anim.state() == QPropertyAnimation.Running:
+                self._drawer_anim.stop()
+
+        self.btn_toggle_list.setIcon(icon("chevron-right" if self._collapsed else "chevron-left"))
+        self.btn_toggle_list.setToolTip(
+            "展开播放列表" if self._collapsed else "收起播放列表，把宽度让给 PDF（D16）"
+        )
+
+        if not animate:
+            if self._collapsed:
+                self._expanded_width = max(self.list_panel.width(), EXPANDED_MIN_WIDTH)
+                self.list_panel.hide()
+                self.list_drawer_content.move(0, 0)
+            else:
+                self.list_panel.show()
+                self.list_drawer_content.move(0, 0)
+                width = getattr(self, "_expanded_width", None)
+                if width is None:
+                    width = self._load_width_map(SPLITTER_WIDTHS_KEY).get("main")
+                if not isinstance(width, int):
+                    width = 300
+                total = sum(self.splitter.sizes()) or 1120
+                width = max(EXPANDED_MIN_WIDTH, min(width, max(EXPANDED_MIN_WIDTH, total - 240)))
+                self._restoring_splitter_widths = True
+                self.splitter.setSizes([width, max(1, total - width)])
+                self._restoring_splitter_widths = False
+            return
+
+        if not self._collapsed:
+            # 展开：先让面板显示并一步到位设置 splitter 宽度（右侧 PDF 仅发生一次定宽重排）
             self.list_panel.show()
             width = getattr(self, "_expanded_width", None)
             if width is None:
                 width = self._load_width_map(SPLITTER_WIDTHS_KEY).get("main")
-            if not isinstance(width, int): width = 300
+            if not isinstance(width, int):
+                width = 300
             total = sum(self.splitter.sizes()) or 1120
             width = max(EXPANDED_MIN_WIDTH, min(width, max(EXPANDED_MIN_WIDTH, total - 240)))
             self._restoring_splitter_widths = True
             self.splitter.setSizes([width, max(1, total - width)])
             self._restoring_splitter_widths = False
-        self.btn_toggle_list.setIcon(icon("chevron-right" if self._collapsed else "chevron-left"))
-        self.btn_toggle_list.setToolTip(
-            "展开播放列表" if self._collapsed else "收起播放列表，把宽度让给 PDF（D16）"
-        )
+
+            if self.list_panel.layout() is not None:
+                self.list_panel.layout().activate()
+            panel_w = max(self.list_panel.width(), width)
+            self._drawer_anim = QPropertyAnimation(self.list_drawer_content, b"pos", self)
+            self._drawer_anim.setDuration(200)
+            self._drawer_anim.setStartValue(QPoint(-panel_w, 0))
+            self._drawer_anim.setEndValue(QPoint(0, 0))
+            self._drawer_anim.setEasingCurve(QEasingCurve.OutCubic)
+            self._drawer_anim.start()
+        else:
+            # 收起：内部容器向左滑出，动画完成时一次性隐藏面板让出宽度
+            self._expanded_width = max(self.list_panel.width(), EXPANDED_MIN_WIDTH)
+            panel_w = self._expanded_width
+            self._drawer_anim = QPropertyAnimation(self.list_drawer_content, b"pos", self)
+            self._drawer_anim.setDuration(180)
+            self._drawer_anim.setStartValue(QPoint(0, 0))
+            self._drawer_anim.setEndValue(QPoint(-panel_w, 0))
+            self._drawer_anim.setEasingCurve(QEasingCurve.InCubic)
+            self._drawer_anim.finished.connect(self._on_drawer_collapse_finished)
+            self._drawer_anim.start()
+
+    def _on_drawer_collapse_finished(self):
+        if self._collapsed:
+            self.list_panel.hide()
+            self.list_drawer_content.move(0, 0)
 
     def _load_width_map(self, key):
         raw = self.database.get_setting(key, "")

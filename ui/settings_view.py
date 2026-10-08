@@ -43,7 +43,7 @@ from PySide6.QtWidgets import (
 
 from core.config import DATA_DIR
 from core.database import BACKUP_KEEP
-from core.tts import TTS_VOICES, WordSpeaker, clear_tts_cache
+from core.tts import TTS_VOICES, TTSNetworkProbeWorker, WordSpeaker, clear_tts_cache
 from ui.components import Banner, show_toast
 from ui.icons import icon
 from ui.style import set_state
@@ -86,6 +86,8 @@ class SettingsView(QWidget):
     def __init__(self, database):
         super().__init__()
         self.database = database
+        self._tts_probe_worker: TTSNetworkProbeWorker | None = None
+        self._tts_net_checked = False
         self._preview_speaker = WordSpeaker(self.database, self)
         self._preview_speaker.notice.connect(
             lambda level, msg: show_toast(self.window(), msg, level=level)
@@ -331,9 +333,21 @@ class SettingsView(QWidget):
             self.combo_tts_voice.addItem(label, voice_id)
         self._field_row(box, "发音语速", self.combo_tts_voice, caption_width=110)
 
+        self.lbl_tts_net = QLabel("Google 语音网络：尚未检测（点击右侧「检测网络状态」可测试连通性）")
+        self.lbl_tts_net.setObjectName("muted")
+        self.lbl_tts_net.setWordWrap(True)
+        box.addWidget(self.lbl_tts_net)
+
         row = QHBoxLayout()
         row.setSpacing(10)
         row.addStretch()
+
+        self.btn_check_tts_net = QPushButton("检测网络状态")
+        self.btn_check_tts_net.setObjectName("iconButton")
+        self.btn_check_tts_net.setIcon(icon("refresh"))
+        self.btn_check_tts_net.clicked.connect(lambda: self.check_tts_network(manual=True))
+        row.addWidget(self.btn_check_tts_net)
+
         self.btn_test_tts = QPushButton("试听发音")
         self.btn_test_tts.setObjectName("iconButton")
         self.btn_test_tts.setIcon(icon("volume"))
@@ -371,9 +385,38 @@ class SettingsView(QWidget):
         self.combo_tts_voice.setEnabled(mode == "online")
         show_toast(self.window(), "单词发音设置已保存")
 
+    def check_tts_network(self, manual: bool = False):
+        """后台实测 Google 语音服务连通性与延迟。"""
+        if self._tts_probe_worker is not None and self._tts_probe_worker.isRunning():
+            return
+        self._tts_net_checked = True
+        self.btn_check_tts_net.setEnabled(False)
+        self.lbl_tts_net.setText("Google 语音网络：正在检测连通性…")
+        set_state(self.lbl_tts_net, "muted")
+
+        voice = self.combo_tts_voice.currentData() or self.database.get_tts_voice()
+        worker = TTSNetworkProbeWorker(voice=voice, parent=self)
+        self._tts_probe_worker = worker
+        worker.probed.connect(
+            lambda ok, detail, m=manual: self._on_tts_net_probed(ok, detail, m)
+        )
+        worker.finished.connect(worker.deleteLater)
+        worker.start()
+
+    def _on_tts_net_probed(self, ok: bool, detail: str, manual: bool = False):
+        self._tts_probe_worker = None
+        self.btn_check_tts_net.setEnabled(True)
+        self.lbl_tts_net.setText(f"Google 语音网络：{detail}")
+        set_state(self.lbl_tts_net, "success" if ok else "warning")
+        if manual:
+            show_toast(
+                self.window(),
+                f"Google 语音网络：{detail}",
+                level="info" if ok else "warning",
+            )
+
     def preview_tts(self):
-        self._preview_speaker.speak("안녕하세요, 단어 발음 테스트입니다.")
-        QDate.currentDate()  # 保持无阻塞
+        self._preview_speaker.speak("안녕하세요, 단어 발음 테스트입니다.", manual=True)
 
     def clear_tts_cache_clicked(self):
         self._preview_speaker.stop()
@@ -381,8 +424,16 @@ class SettingsView(QWidget):
         self._refresh_usage()
         show_toast(self.window(), f"已清理 {removed} 个发音缓存文件")
 
+    def showEvent(self, event):
+        super().showEvent(event)
+        if not self._tts_net_checked:
+            self.check_tts_network(manual=False)
+
     def shutdown(self):
         self._preview_speaker.shutdown()
+        if self._tts_probe_worker is not None and self._tts_probe_worker.isRunning():
+            self._tts_probe_worker.wait(1500)
+        self._tts_probe_worker = None
 
     # ---------------------------------------------------------------- 分组五：快捷键
 

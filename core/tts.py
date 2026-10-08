@@ -15,6 +15,7 @@
 import hashlib
 import os
 import re
+import time
 import urllib.parse
 import urllib.request
 from pathlib import Path
@@ -27,6 +28,11 @@ from core.config import DEFAULT_TTS_VOICE, TTS_DIR
 TTS_VOICES = (
     ("google_ko", "Google 韩语标准发音（默认）"),
     ("google_ko_slow", "Google 韩语慢速清晰发音"),
+)
+
+_BASE_USER_AGENT = (
+    "Mozilla/5.0 (Windows NT 10.0; Win64; x64) "
+    "AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36"
 )
 
 # 语法条目里常见的 "(으) + 韵尾辅音" 组合，合并为自然发音音节
@@ -110,17 +116,127 @@ def clear_tts_cache() -> int:
     return removed
 
 
+def _get_effective_proxies() -> dict[str, str]:
+    """合并系统注册表代理与环境变量代理。
+
+    Python 标准库 `urllib.request.getproxies()` 在环境变量中存在 `NO_PROXY` 时，
+    会直接忽略 Windows 注册表里的系统代理（如 `127.0.0.1:7897`）。这里显式合并两者。
+    """
+    proxies: dict[str, str] = {}
+    get_reg = getattr(urllib.request, "getproxies_registry", None)
+    if callable(get_reg):
+        try:
+            proxies.update(get_reg() or {})
+        except Exception:
+            pass
+    try:
+        env_proxies = urllib.request.getproxies_environment() or {}
+        for k, v in env_proxies.items():
+            if k in ("http", "https") and v:
+                proxies[k] = v
+            elif k == "no" and "no" not in proxies:
+                proxies[k] = v
+    except Exception:
+        pass
+    return proxies
+
+
+def _build_url_opener() -> urllib.request.OpenerDirector:
+    proxies = _get_effective_proxies()
+    return urllib.request.build_opener(urllib.request.ProxyHandler(proxies))
+
+
+def _google_tts_endpoints(cleaned_text: str, voice: str) -> list[tuple[str, dict[str, str], str]]:
+    """构造 Google TTS 候选请求端点列表。
+
+    第一顺位采用 `https://www.google.com/translate_tts` 配合 `Host: translate.googleapis.com`：
+    许多代理分流规则（如常见 Clash 规则集）仍将 `translate.googleapis.com` / `translate.google.com`
+    标为 `DIRECT` 直连，导致国内环境握手超时；而 `www.google.com` 会正常走代理分流，
+    并由 Google Frontend (GFE) 根据 Host 头路由到翻译语音服务。
+    """
+    query = urllib.parse.quote(cleaned_text)
+    speed = "0.24" if voice == "google_ko_slow" else "1"
+    params = f"ie=UTF-8&client=tw-ob&tl=ko&ttsspeed={speed}&q={query}"
+    return [
+        (
+            f"https://www.google.com/translate_tts?{params}",
+            {"User-Agent": _BASE_USER_AGENT, "Host": "translate.googleapis.com"},
+            "www.google.com (GFE)",
+        ),
+        (
+            f"https://translate.googleapis.com/translate_tts?{params}",
+            {"User-Agent": _BASE_USER_AGENT},
+            "translate.googleapis.com",
+        ),
+        (
+            f"https://translate.google.com/translate_tts?{params}",
+            {"User-Agent": _BASE_USER_AGENT},
+            "translate.google.com",
+        ),
+    ]
+
+
+def probe_google_tts(voice: str = DEFAULT_TTS_VOICE, timeout: float = 4.0) -> tuple[bool, str]:
+    """实测 Google 韩语发音服务的网络连通性与响应延迟。"""
+    proxies = _get_effective_proxies()
+    proxy_url = proxies.get("https") or proxies.get("http") or ""
+    proxy_desc = f"系统代理 {proxy_url}" if proxy_url else "未检测到系统代理/直连"
+
+    opener = urllib.request.build_opener(urllib.request.ProxyHandler(proxies))
+    last_err = "请求超时"
+    for url, headers, node_label in _google_tts_endpoints("한국어", voice):
+        req = urllib.request.Request(url, headers=headers)
+        t0 = time.perf_counter()
+        try:
+            with opener.open(req, timeout=timeout) as resp:
+                data = resp.read()
+            elapsed_ms = max(1, round((time.perf_counter() - t0) * 1000))
+            if data and len(data) > 256:
+                return True, f"连接正常（延迟 {elapsed_ms} ms · {node_label} · {proxy_desc}）"
+            last_err = "返回音频为空"
+        except Exception as exc:
+            reason = getattr(exc, "reason", None) or exc
+            last_err = str(reason)
+            continue
+
+    if "timed out" in last_err.lower() or "10060" in last_err:
+        last_err = "握手或连接超时"
+    return False, f"无法连接（{last_err} · {proxy_desc}）"
+
+
+class TTSNetworkProbeWorker(QThread):
+    """后台检测 Google TTS 网络状态的线程。"""
+
+    probed = Signal(bool, str)
+
+    def __init__(self, voice: str = DEFAULT_TTS_VOICE, parent=None):
+        super().__init__(parent)
+        self.voice = voice or DEFAULT_TTS_VOICE
+
+    def run(self):
+        ok, detail = probe_google_tts(self.voice, timeout=4.0)
+        self.probed.emit(ok, detail)
+
+
 class _TTSFetchWorker(QThread):
     """后台拉取 Google TTS 韩语音频并原子写入本地缓存目录。"""
 
-    completed = Signal(int, str, str, str)  # request_id, cleaned_text, file_path, error
+    completed = Signal(int, str, str, str, bool)  # request_id, cleaned_text, file_path, error, manual
 
-    def __init__(self, request_id: int, cleaned_text: str, voice: str, target_path: Path):
+    def __init__(
+        self,
+        request_id: int,
+        cleaned_text: str,
+        voice: str,
+        target_path: Path,
+        manual: bool = False,
+    ):
         super().__init__()
         self.request_id = request_id
         self.cleaned_text = cleaned_text
         self.voice = voice or DEFAULT_TTS_VOICE
         self.target_path = Path(target_path)
+        self.manual = bool(manual)
         self._cancelled = False
 
     def cancel(self):
@@ -132,7 +248,9 @@ class _TTSFetchWorker(QThread):
         try:
             TTS_DIR.mkdir(parents=True, exist_ok=True)
         except OSError as exc:
-            self.completed.emit(self.request_id, self.cleaned_text, "", str(exc))
+            self.completed.emit(
+                self.request_id, self.cleaned_text, "", str(exc), self.manual
+            )
             return
 
         tmp_path = self.target_path.with_suffix(f".{self.request_id}.tmp")
@@ -146,7 +264,11 @@ class _TTSFetchWorker(QThread):
             if ok and tmp_path.is_file() and tmp_path.stat().st_size > 256:
                 os.replace(tmp_path, self.target_path)
                 self.completed.emit(
-                    self.request_id, self.cleaned_text, str(self.target_path), ""
+                    self.request_id,
+                    self.cleaned_text,
+                    str(self.target_path),
+                    "",
+                    self.manual,
                 )
                 return
 
@@ -155,33 +277,25 @@ class _TTSFetchWorker(QThread):
                 self.request_id,
                 self.cleaned_text,
                 "",
-                "Google 语音服务未返回有效音频",
+                "Google 语音服务连接超时或未返回有效音频",
+                self.manual,
             )
         except Exception as exc:
             self._cleanup_tmp(tmp_path)
             if not self._cancelled:
-                self.completed.emit(self.request_id, self.cleaned_text, "", str(exc))
+                self.completed.emit(
+                    self.request_id, self.cleaned_text, "", str(exc), self.manual
+                )
 
     def _fetch_google_tts(self, tmp_path: Path) -> bool:
         """从 Google Translate TTS 拉取韩语 MP3（支持标准语速与慢速跟读）。"""
-        query = urllib.parse.quote(self.cleaned_text)
-        speed = "0.24" if self.voice == "google_ko_slow" else "1"
-        endpoints = (
-            f"https://translate.googleapis.com/translate_tts?ie=UTF-8&client=tw-ob&tl=ko&ttsspeed={speed}&q={query}",
-            f"https://translate.google.com/translate_tts?ie=UTF-8&client=tw-ob&tl=ko&ttsspeed={speed}&q={query}",
-        )
-        headers = {
-            "User-Agent": (
-                "Mozilla/5.0 (Windows NT 10.0; Win64; x64) "
-                "AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36"
-            )
-        }
-        for url in endpoints:
+        opener = _build_url_opener()
+        for url, headers, _node in _google_tts_endpoints(self.cleaned_text, self.voice):
             if self._cancelled:
                 return False
             req = urllib.request.Request(url, headers=headers)
             try:
-                with urllib.request.urlopen(req, timeout=8) as resp:
+                with opener.open(req, timeout=4.5) as resp:
                     data = resp.read()
                 if data and len(data) > 256:
                     tmp_path.write_bytes(data)
@@ -212,11 +326,13 @@ class WordSpeaker(QObject):
         self._request_seq = 0
         self._workers = set()
         self._offline_warned = False
+        self._last_played_path: Path | None = None
 
         self.audio_output = QAudioOutput(self)
         self.audio_output.setVolume(1.0)
         self.player = QMediaPlayer(self)
         self.player.setAudioOutput(self.audio_output)
+        self.player.errorOccurred.connect(self._on_player_error)
         self.refresh_audio_device()
 
         self._local_tts = None
@@ -233,8 +349,8 @@ class WordSpeaker(QObject):
                     break
         self.audio_output.setDevice(chosen)
 
-    def speak(self, raw_korean: str) -> bool:
-        """朗读给定韩语词条。返回是否成功发起朗读。"""
+    def speak(self, raw_korean: str, manual: bool = False) -> bool:
+        """朗读给定韩语词条。`manual=True` 表示用户主动点击发音/试听按钮。"""
         cleaned = clean_korean_for_tts(raw_korean)
         if not cleaned:
             return False
@@ -259,7 +375,7 @@ class WordSpeaker(QObject):
             pass
 
         # 未命中缓存：后台拉取，完成后若仍是最新请求则立即播放
-        self._start_fetch(req_id, cleaned, voice, cached_file)
+        self._start_fetch(req_id, cleaned, voice, cached_file, manual=manual)
         return True
 
     def stop(self):
@@ -278,16 +394,34 @@ class WordSpeaker(QObject):
                 self._local_tts.stop()
             except Exception:
                 pass
+        self._last_played_path = path
         self.player.stop()
+        # 先清空 source 再重设，保证同一缓存文件连续点击时始终从头播放
+        self.player.setSource(QUrl())
         self.player.setSource(QUrl.fromLocalFile(str(path)))
         self.player.play()
 
-    def _start_fetch(self, req_id: int, cleaned: str, voice: str, target_path: Path):
+    def _on_player_error(self, _error, error_string: str):
+        # 若缓存文件损坏导致解码失败，自动移除损坏文件以便下次重新拉取
+        bad_path = self._last_played_path
+        self._last_played_path = None
+        if bad_path is not None:
+            try:
+                if bad_path.is_file():
+                    bad_path.unlink()
+            except OSError:
+                pass
+        if error_string:
+            self.notice.emit("warning", f"音频播放失败：{error_string}")
+
+    def _start_fetch(
+        self, req_id: int, cleaned: str, voice: str, target_path: Path, manual: bool = False
+    ):
         for w in list(self._workers):
             if w.isRunning():
                 w.cancel()
 
-        worker = _TTSFetchWorker(req_id, cleaned, voice, target_path)
+        worker = _TTSFetchWorker(req_id, cleaned, voice, target_path, manual=manual)
         self._workers.add(worker)
         worker.completed.connect(self._on_fetch_completed)
         worker.finished.connect(lambda w=worker: self._cleanup_worker(w))
@@ -297,7 +431,9 @@ class WordSpeaker(QObject):
         self._workers.discard(worker)
         worker.deleteLater()
 
-    def _on_fetch_completed(self, req_id: int, cleaned: str, file_path: str, error: str):
+    def _on_fetch_completed(
+        self, req_id: int, cleaned: str, file_path: str, error: str, manual: bool = False
+    ):
         # 如果用户已经切到了下一个词，只静默保留缓存文件，不再插播旧词
         if req_id != self._request_seq:
             return
@@ -309,14 +445,14 @@ class WordSpeaker(QObject):
 
         # 联网合成失败：自动退回系统本地韩语语音（PRODUCT_SPEC 8.6 / 12.2 F3）
         ok_local = self._speak_local(cleaned, explicit_local=False)
-        if not self._offline_warned:
+        if manual or not self._offline_warned:
             self._offline_warned = True
             if ok_local:
                 self.notice.emit("warning", "当前无法连接 Google 语音服务，已切换为系统离线韩语发音")
             else:
                 self.notice.emit(
                     "warning",
-                    "当前无法连接 Google 语音服务，且系统未安装离线韩语语音包",
+                    "无法连接 Google 语音服务（可在设置页点击「检测网络状态」排查），且系统未安装离线韩语语音包",
                 )
 
     def _ensure_local_tts(self) -> bool:
@@ -370,3 +506,4 @@ class WordSpeaker(QObject):
             worker.cancel()
             worker.wait(1500)
         self._workers.clear()
+

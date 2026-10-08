@@ -286,9 +286,9 @@ class MainWindow(QMainWindow):
         top_layout.addStretch(1)
         root_layout.addWidget(self.top_bar)
 
-        # 下方主工作区：左侧导航栏 + 右侧 1px border-strong 包裹的整块 #FFFFFF 大白板
+        # 下方主工作区：左侧无边框导航栏 + 右侧四周悬浮留缝的 10px 圆角大白岛
         main_layout = QHBoxLayout()
-        main_layout.setContentsMargins(0, 0, 0, 0)
+        main_layout.setContentsMargins(0, 8, 8, 8)
         main_layout.setSpacing(0)
 
         sidebar = QFrame()
@@ -326,8 +326,8 @@ class MainWindow(QMainWindow):
         sidebar_layout.addWidget(footer)
 
         self.stacked_widget = QStackedWidget()
-        self.stacked_widget.setObjectName("mainPane")
-        self.stacked_widget.setContentsMargins(0, 0, 0, 0)
+        self.stacked_widget.setObjectName("mainContentIsland")
+        self.stacked_widget.setContentsMargins(1, 1, 1, 1)
         main_layout.addWidget(sidebar)
         main_layout.addWidget(self.stacked_widget, 1)
         root_layout.addLayout(main_layout, 1)

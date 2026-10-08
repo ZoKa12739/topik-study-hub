@@ -262,10 +262,15 @@ Runtime state changes need `ui/style.py`'s `restyle()`. Qt does **not** re-evalu
 
 Layout & QSS sizing gotchas:
 
-- **Pane-based (整版一体化面板) layout over Card-based shells**:
+- **Island Layout (岛屿式悬浮布局) over Card-based shells**:
   - `MainWindow` uses a 36px full-width top drag bar (`QFrame#topTitleBar`, `#F4F7F4`) housing the brand icon/title on the left and window controls (`- □ ×`) on the right.
-  - Below `#topTitleBar`, the left `#sidebar` (`#F4F7F4`) and right `QStackedWidget#mainPane` (`#FFFFFF`) meet at a sharp 1px `#C6D2C9` (`border-strong`) border.
-  - All page roots (`P0`–`P5`) use `objectName="panePage"`, `ContentsMargins(0, 0, 0, 0)`, and `spacing = 0`. Do not wrap page sections in rounded `QFrame#surface` cards with grey outer margins (except `P1`'s centered `QFrame#vocabCard` in 过词/专攻 modes); use borderless `QWidget` / `#flatDetailPanel` sections divided by 1px full-bleed `QFrame#paneDivider` lines (`#DDE5DE`) or 1px `QSplitter` handles (`#DDE5DE`, hover `#C6D2C9`).
+  - Below `#topTitleBar`, `main_layout` uses `ContentsMargins(0, 8, 8, 8)` and `spacing = 0`: the left `#sidebar` (`#F4F7F4`, `border: none`) blends into the app background, while the right `QStackedWidget#mainContentIsland` (`#FFFFFF`, `1px solid #DDE5DE`, `border-radius: 10px`, `ContentsMargins(1, 1, 1, 1)`) floats as a single white sheet with 8px breathing margins on top/right/bottom.
+  - **Transparent inner containers (圆角防遮挡)**: All page roots (`#panePage`) and internal bars/panels (`#commandBar`, `#paneHeader`, `#paneSubBar`, `#shadowingListPanel`, `#pdfBleedPanel`, `#shadowingPlayerCard`, `#flatDetailPanel`, `QTableWidget`, `QScrollArea`) must keep `background: transparent` so they never paint opaque square corners over `mainContentIsland`'s 10px rounded border. Divide sections inside the island with 1px `QFrame#paneDivider` lines (`#DDE5DE`) or 1px `QSplitter` handles (`#DDE5DE`, hover `#C6D2C9`).
+- **Micro-Animations Golden Rules (微动效四条黄金法则)**:
+  1. **No width/height animation (禁动宽高 / 零重排)**: Never animate `width` or `height` (which triggers global layout reflows and 60fps `QPdfView` re-rasterization). For drawers (`ShadowingView.list_panel`), set the `QSplitter` target width once and animate the inner container's `b"pos"` (`list_drawer_content`, `-panel_w <-> 0`, `OutCubic`/`InCubic`).
+  2. **Zero Drop Shadows (严守 0 阴影)**: Never use `QGraphicsDropShadowEffect` anywhere; rely strictly on background color contrast (`#F4F7F4` vs `#FFFFFF`) and `1px` borders to guarantee 60FPS.
+  3. **Bind to `self` & guard rapid interrupts (防 GC 回收与连按防漂移)**: Always bind `QPropertyAnimation` and `QGraphicsOpacityEffect` instances to `self` (e.g., `self._card_anim`, `self._drawer_anim`, `self._pos_anim`, `self._fade_anim`). When a `pos` animation can be interrupted by rapid key presses (`VocabView._animate_card_step`), snap the widget to `self._card_anim.endValue()` before reading `card.pos()` so rapid inputs never accumulate coordinate drift. When reusing a fade animation for both enter and exit (`Toast` at top-center `y=36->44`), connect `finished` once in `__init__` and gate `self.hide()` with `self._fading_out`.
+  4. **Instant Hover (悬停瞬切)**: Keep all hover states instantaneous via QSS without fade transitions.
 - **Core high-density micro-components (`ui/components.py`)**:
   - `MicroPill`: 20–22px height, `border-radius: 999px`, `#F2F5F1` (`bg-elevated`), borderless, used for metadata tags and `PillListDelegate` second-row items in P2/P3/P4.
   - `StatusDot`: 8×8px dot (`border-radius: 4px`) using `STATE_COLORS`, used only where status is actionable and mutually exclusive.

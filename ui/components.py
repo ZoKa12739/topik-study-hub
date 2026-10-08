@@ -15,11 +15,12 @@
 因此本项目不再用模态框报告可预期的失败。
 """
 
-from PySide6.QtCore import QRectF, QSize, QTimer, Qt, Signal
+from PySide6.QtCore import QEasingCurve, QPoint, QPropertyAnimation, QRectF, QSize, QTimer, Qt, Signal
 from PySide6.QtGui import QColor, QFontMetrics, QIcon, QPainter
 from PySide6.QtWidgets import (
     QApplication,
     QFrame,
+    QGraphicsOpacityEffect,
     QHBoxLayout,
     QLabel,
     QLineEdit,
@@ -213,13 +214,15 @@ class InlineProgress(QProgressBar):
 
 
 class Toast(QLabel):
-    """轻提示：浮在窗口底部，2.5 秒后自动消失，不阻塞。
+    """轻提示：浮在窗口顶部居中，轻微向下位移 8px 并淡入，停留 2 秒后淡出，不阻塞。
 
-    `PRODUCT_SPEC` 3.3 要求"成功用 toast，2.5 秒消失"。
     每个顶层窗口复用一个实例（见 `show_toast`），避免堆叠。
     """
 
-    DURATION_MS = 2500
+    HOLD_MS = 2000
+    DURATION_MS = HOLD_MS
+    ANIM_MS = 180
+    SLIDE_OFFSET_Y = 8
 
     def __init__(self, parent):
         super().__init__(parent)
@@ -228,36 +231,86 @@ class Toast(QLabel):
         self.setWordWrap(False)
         self.hide()
 
+        self._opacity_effect = QGraphicsOpacityEffect(self)
+        self.setGraphicsEffect(self._opacity_effect)
+        self._opacity_effect.setOpacity(0.0)
+
+        # 动画对象绑定在 self 上，防止 GC 回收
+        self._pos_anim = QPropertyAnimation(self, b"pos", self)
+        self._fade_anim = QPropertyAnimation(self._opacity_effect, b"opacity", self)
+        self._fading_out = False
+        self._fade_anim.finished.connect(self._on_fade_finished)
+
         self._timer = QTimer(self)
         self._timer.setSingleShot(True)
-        self._timer.timeout.connect(self.hide)
+        self._timer.timeout.connect(self._start_fade_out)
 
-        parent.installEventFilter(self)
+        if parent is not None:
+            parent.installEventFilter(self)
+
+    def _target_pos(self):
+        parent = self.parent()
+        if not parent:
+            return QPoint(8, 44)
+        # 顶部居中 y=44px（36px 顶栏下方 8px）
+        x = max(8, (parent.width() - self.width()) // 2)
+        return QPoint(x, 44)
 
     def flash(self, text, level="success"):
+        self._pos_anim.stop()
+        self._fade_anim.stop()
+        self._timer.stop()
+        self._fading_out = False
+
         _, object_name, color = _LEVELS.get(level, _LEVELS["success"])
         restyle(self, object_name.replace("banner", "toast"))
         self.setPixmap(icon(_LEVELS[level][0], color, 14).pixmap(14, 14))
         self.setText(f"  {text}")
         self.adjustSize()
-        self._reposition()
+
+        target = self._target_pos()
+        start_pos = QPoint(target.x(), max(4, target.y() - self.SLIDE_OFFSET_Y))
+        self.move(start_pos)
+        self._opacity_effect.setOpacity(0.0)
+
+        self._pos_anim.setDuration(self.ANIM_MS)
+        self._pos_anim.setStartValue(start_pos)
+        self._pos_anim.setEndValue(target)
+        self._pos_anim.setEasingCurve(QEasingCurve.OutCubic)
+
+        self._fade_anim.setDuration(self.ANIM_MS)
+        self._fade_anim.setStartValue(0.0)
+        self._fade_anim.setEndValue(1.0)
+        self._fade_anim.setEasingCurve(QEasingCurve.OutCubic)
+
         self.show()
         self.raise_()
-        self._timer.start(self.DURATION_MS)
+        self._pos_anim.start()
+        self._fade_anim.start()
+        self._timer.start(self.HOLD_MS)
+
+    def _start_fade_out(self):
+        self._fade_anim.stop()
+        self._fading_out = True
+        self._fade_anim.setDuration(self.ANIM_MS)
+        self._fade_anim.setStartValue(self._opacity_effect.opacity())
+        self._fade_anim.setEndValue(0.0)
+        self._fade_anim.setEasingCurve(QEasingCurve.OutCubic)
+        self._fade_anim.start()
+
+    def _on_fade_finished(self):
+        if self._fading_out:
+            self._fading_out = False
+            self.hide()
 
     def eventFilter(self, obj, event):
-        # 父窗口尺寸变化时保持在底部居中
+        # 父窗口尺寸变化时保持在顶部居中
         if obj is self.parent() and event.type() == event.Type.Resize and self.isVisible():
             self._reposition()
         return False
 
     def _reposition(self):
-        parent = self.parent()
-        if not parent:
-            return
-        x = (parent.width() - self.width()) // 2
-        y = parent.height() - self.height() - 28
-        self.move(max(8, x), max(8, y))
+        self.move(self._target_pos())
 
 
 def make_copyable(label):

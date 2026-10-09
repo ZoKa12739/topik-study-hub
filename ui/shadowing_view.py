@@ -704,7 +704,7 @@ class ShadowingView(QWidget):
         self.track_unlogged_ms = 0            # 还没写进本题目 listened_ms 的毫秒
         self.loop_count = 0                   # 本次会话里的 AB 循环次数（D5）
         self._seek_target = None              # 正在跳转的目标位置，见 _seek
-        self._pending_position = None         # 载入时就等着落下的定位
+        self._pending_position = None         # 【死字段】播放位置恢复已停用；只会是 None
         self._rebuilding = False
         self._banner_action = None
         self._closed = False
@@ -1889,7 +1889,7 @@ class ShadowingView(QWidget):
         self.last_position = 0
         self._seek_target = None
         self.player.setSource(QUrl.fromLocalFile(absolute))
-        self._pending_position = None
+        self._pending_position = None    # 播放位置恢复已停用：永远从头开始（见 _pending_position 定义处）
         if progress["status"] != "done":
             self.database.set_track_status(track_id, "listening")
         self.database.set_playback_state(self.playlist_id, track_id)
@@ -2103,7 +2103,9 @@ class ShadowingView(QWidget):
 
     def _on_media_status(self, status):
         if status in (QMediaPlayer.MediaStatus.LoadedMedia, QMediaPlayer.MediaStatus.BufferedMedia):
-            # 媒体真的就绪了：把载入时挂起的定位落下来（见 load_track）
+            # 媒体真的就绪了：把载入时挂起的定位落下来。
+            # 播放位置恢复已停用，`_pending_position` 永远是 None，这个分支现在不会触发；
+            # 留着是因为重新启用位置恢复时只需要在 load_track 里赋值，这里不用再改。
             if self._pending_position is not None:
                 target, self._pending_position = self._pending_position, None
                 self._seek(target)
@@ -2948,7 +2950,11 @@ class ShadowingView(QWidget):
     # ==================================================================
 
     def flush_study_session(self):
-        """**这一页对外的唯一冲刷入口**：跟读时长、曲目进度、位置、AB、语速。
+        """**这一页对外的唯一冲刷入口**：跟读时长、AB 点、语速、曲目状态、播放上下文。
+
+        **不包含播放位置**：`track_progress.position_ms` 的写入与恢复已停用（用户主动决定，
+        见 `CLAUDE.md` 的 "Playback-position persistence was removed"）。`position_ms=None`
+        是**故意的缺省**，不是漏写。
 
         调用点：暂停、切曲、切列表、移出列表、离开页面（`hideEvent`）、关窗口
         （`MainWindow.closeEvent`）。少一处，用户就白练一段——所以新加出口时调它，

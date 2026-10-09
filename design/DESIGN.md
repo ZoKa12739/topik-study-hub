@@ -384,7 +384,7 @@ v1.1 曾按 Linear 把字号压到很紧（页面标题 20px）。**实测反馈
 
 1. Qt 不支持 CSS 的 `currentColor`，图标重新着色只能靠字符串替换——内联最直接，用资源文件反而要加载后改写
 2. 避免运行时资源路径解析。本项目已被硬编码路径坑过一次（`PRODUCT_SPEC` D10），能不加就不要再加一处
-3. 32 个图标集中在一个文件里可审计，也便于统一调整描边粗细与圆角
+3. 43 个图标集中在一个文件里可审计，也便于统一调整描边粗细与圆角
 4. 未引入第三方素材，因此不存在授权与后续升级问题
 
 **规格（`ui/icons.py`）：** 24×24 viewBox、`stroke-width: 2.25`、圆头圆角接合、单色描边。默认色取 `ui/theme.py` 的 `TEXT_COLORS["secondary"]`（= `#4C5650`，即 §3.1 的 `text-secondary`）；**每个图标同时提供 1x / 2x 位图**，交给 Qt 按屏幕缩放比挑选，避免高分屏发虚。
@@ -402,7 +402,7 @@ button.setIcon(icon("star", "#FFFFFF", 14))      # 主按钮上的白星
 item.setIcon(nav_icon("calendar"))               # 导航项：未选中 muted / 选中高亮
 ```
 
-**已定义的 32 个图标：** 导航 `calendar / book / headphones / folder / scissors`；动作 `search / plus / check / check-circle / x / x-circle / trash / refresh / alert / upload / download / clipboard / settings / note`；文件类型 `file-text / image / music / film / presentation`；播放器 `play / pause / skip-back / skip-forward / repeat`；星标 `star / star-filled`。
+**已定义的 43 个图标：** 导航 `calendar / book / headphones / folder / scissors`；动作 `search / plus / check / check-circle / x / x-circle / trash / refresh / alert / upload / download / clipboard / settings / note / edit / pin / chevron-left / chevron-right`；文件类型 `file-text / image / music / film / presentation / folder-open`；播放器 `play / pause / stop / mic / skip-back / skip-forward / repeat / volume`；星标 `star / star-filled`；窗口控制 `window-minimize / window-maximize / window-restore / window-close`。
 
 **P3 文件类型图标映射**（取代原 `📕🎵🖼️🎞️📊📄`）：`.pdf/.txt → file-text`、图片 `→ image`、`.mp3/.wav/.m4a → music`、`.mp4/.mkv → film`、`.pptx → presentation`。映射表在 `vault_view.py` 的 `_FILE_ICONS`。
 
@@ -500,7 +500,7 @@ Linear 是 Web 应用。有些效果 **QSS 做不到**，不要在方案里许�
 | P2 播放器的上一段/下一段、循环模式按钮尚未存在（属于播放列表功能） | `PRODUCT_SPEC` 第 5 期 |
 | 浅色主题 | 按 §6.2 结论，暂不做 |
 
-**D-3 完成情况（2026-10-06）：** 新增 `ui/icons.py`（32 个内联单色线性图标）、`ui/style.py`（运行时样式切换）、`ui/assets/check.svg`。替换了**全部 19 处界面 emoji**，并额外给侧边栏 5 个导航项加了图标（原为 `今天/词/听/库/记` 五个汉字标记——它们不是 emoji，但换成线性图标后才是 Linear 的导航形态）。P1/P4 的 OCR 状态提示从 `✅/❌` 改为语义色（`stateSuccess` / `stateDanger`），顺带把 `PRODUCT_SPEC` 3.1 纪律 3 落地。`〔v1.6〕`这里提到的 P1/P4 **OCR 状态提示**随后随 OCR 整体移除；**语义色机制 `set_state()` 本身保留**，仍用于 ffmpeg 自查与笔记保存提示。
+**D-3 完成情况（2026-10-06）：** 新增 `ui/icons.py`（当时 32 个内联单色线性图标，〔v1.12〕现已增至 **43 个**）、`ui/style.py`（运行时样式切换）、`ui/assets/check.svg`。替换了**全部 19 处界面 emoji**，并额外给侧边栏 5 个导航项加了图标（原为 `今天/词/听/库/记` 五个汉字标记——它们不是 emoji，但换成线性图标后才是 Linear 的导航形态）。P1/P4 的 OCR 状态提示从 `✅/❌` 改为语义色（`stateSuccess` / `stateDanger`），顺带把 `PRODUCT_SPEC` 3.1 纪律 3 落地。`〔v1.6〕`这里提到的 P1/P4 **OCR 状态提示**随后随 OCR 整体移除；**语义色机制 `set_state()` 本身保留**，仍用于 ffmpeg 自查与笔记保存提示。
 
 **遗留的 `→` 字符：** `ui/style.py` 与 `ui/vault_view.py` 的**源码注释**里各有一个箭头，不是界面文案。
 

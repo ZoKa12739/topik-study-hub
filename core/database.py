@@ -1658,7 +1658,8 @@ class StudyDatabase:
                             "title": track["title"],
                             "playlist": playlist_name,
                             "segment": segment,
-                            "position_ms": progress["position_ms"],
+                            # `position_ms` 已停止写入（v1.12），卡片也不再显示"上次听到"——
+                            # 从载荷里去掉，别让一个永远是 0 的字段继续往下传。
                             "listened_ms": progress["listened_ms"],
                             "duration_ms": track["duration_ms"],
                         }

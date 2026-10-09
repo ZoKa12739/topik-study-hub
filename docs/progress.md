@@ -1,5 +1,11 @@
 # 进度日志
 
+> **本文件是带日期的会话日志，记录"当时做了什么"，不是现状说明。** 其中的数量、状态与文件名
+> 以**记录当天**为准，可能已被后续决定改变。查现状请看 `CLAUDE.md`、`README.md` 与
+> `docs/PRODUCT_SPEC.md`（当前 v1.13）。已知的两处"日志说做了、后来被主动移除"：
+> **Anki 导出**（2026-10-09 移除，含三个测试文件）与**曲目播放位置记忆**（同日停用）。
+> 详见 `CLAUDE.md` 的 "Anki export was removed" 与 "Playback-position persistence was removed"。
+
 ## 会话：2026-10-05
 
 ### 阶段 1：需求与现状发现

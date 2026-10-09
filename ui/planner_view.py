@@ -52,19 +52,9 @@ RECORD_BAR_TARGETS = {
     "vocab_drilled": "vocab",
 }
 
-# H4 侧栏的宽度。三条内容（《列表名》第 N 段 / 上次听到 12:34 / 已过 320 / 1400）
+# H4 侧栏的宽度。《列表名》第 N 段 / 曲目名 / 已过 320 / 1400 / N 待专攻
 # 都要能折行放下，比 240px 的全局侧边栏宽一档。
 SIDE_COLUMN_WIDTH = 300
-
-
-def _mmss(milliseconds):
-    """毫秒 → `12:34`。超过一小时的才补上小时段。"""
-    total = max(0, int(milliseconds)) // 1000
-    hours, remainder = divmod(total, 3600)
-    minutes, seconds = divmod(remainder, 60)
-    if hours:
-        return f"{hours}:{minutes:02d}:{seconds:02d}"
-    return f"{minutes}:{seconds:02d}"
 
 
 class DayCell(QFrame):
@@ -473,17 +463,20 @@ class PlannerView(QWidget):
         self.resume_card.setVisible(bool(contexts))
 
     def _resume_row(self, context):
-        """「继续上次」置顶数据行：带 state-warning 状态灯与微型胶囊，无缝汇入任务列表。"""
+        """「继续上次」置顶数据行：带 state-warning 状态灯与微型胶囊，无缝汇入任务列表。
+
+        音频行**没有"上次听到 MM:SS"**——播放位置记忆已停用（`PRODUCT_SPEC` v1.12/v1.13），
+        那一格恒显示 `0:00`，是首页上唯一的失真读数，故整格去掉而非找个替代读数填上。
+        要它回来，前提是恢复位置持久化，那是需要所有者先拍板的决定（见 `CLAUDE.md`）。
+        """
         pills = []
         if context["kind"] == "audio":
             if context["playlist"] and context["segment"]:
                 headline = f"继续跟读《{context['playlist']}》第 {context['segment']} 段"
                 if context.get("title"):
                     pills.append(MicroPill(context["title"], faint=True))
-                pills.append(MicroPill(f"上次听到 {_mmss(context['position_ms'])}"))
             else:
                 headline = f"继续跟读《{context['title']}》"
-                pills.append(MicroPill(f"上次听到 {_mmss(context['position_ms'])}"))
             handler = lambda _=False: self.open_shadowing.emit()   # noqa: E731
         else:
             headline = f"继续过词《{context['name']}》"

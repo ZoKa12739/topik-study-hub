@@ -14,7 +14,7 @@ This repository is version-controlled and published at <https://github.com/ZoKa1
 
 | File | Role |
 |---|---|
-| `docs/PRODUCT_SPEC.md` | **Authoritative product spec** (v1.11). Features, pages, data model, decisions D1–D16, 8-phase roadmap in ch.10 |
+| `docs/PRODUCT_SPEC.md` | **Authoritative product spec** (v1.14). Features, pages, data model, decisions D1–D16, 8-phase roadmap in ch.10 |
 | `design/DESIGN.md` | **Authoritative visual spec** (v1.8). Color/type/spacing tokens, the 10 Linear-derived rules, D-1…D-5 stages, known gotchas |
 | `USER_CONTEXT.md` | **Study time recording spec**. Requirements and principles for active study time vs app runtime tracking |
 | `docs/Toolkit_Design_Proposal.md` | The original outline. Historical — superseded by `PRODUCT_SPEC.md` |
@@ -48,12 +48,23 @@ strictly light loop — the owner accepts the UI by hand in a real window, so th
 moment the code is syntactically sound:
 
 - **Single-agent delivery.** Never spawn a sub-agent for independent review or multi-agent
-  orchestration — no `code-reviewer`, `qa-tester`, `verifier`, `executor`. That holds **even when a
-  plugin skill prescribes it**: `/autopilot`'s five-phase lifecycle including its validation phase is
-  overridden here. The owner kills review agents on sight; treat that as the instruction it is.
+  orchestration on your own initiative — no `code-reviewer`, `qa-tester`, `verifier`, `executor`.
+  That holds **even when a plugin skill prescribes it**: `/autopilot`'s five-phase lifecycle including
+  its validation phase is overridden here. The owner kills self-initiated review agents on sight;
+  treat that as the instruction it is. **A review the owner commissioned is not covered by this ban** —
+  the 2026-10-09 audit ran exactly this way (one agent, read-only, `git log -S` plus a `mode=ro`
+  database query) and surfaced five P0/P1 findings that nothing in this section would have caught.
+  Ask first, then do it single-agent.
 - **No self-initiated QA loops.** Do not write and run extra offscreen tests, probes, or regression
   suites, and do not go exploring "one more edge case" unprompted. A passing check the agent invented
-  is not worth the tokens it costs.
+  is not worth the tokens it costs. **This is a budget rule, not a claim that coverage is adequate.**
+  The gap is real and the decision about it belongs to the owner: `tests/` has 33 cases, all in
+  `test_planner_adversarial.py` (P0 metrics) and `test_weekly_review_stress.py` (week-boundary
+  arithmetic). Zero coverage on the paths where losing data is unrecoverable — `pass_word`'s
+  state+cursor transaction, `import_word_list` / `delete_word_list`'s first-layer-only rules,
+  `apply_material_scan(complete=False)`, `relocate_material`'s six-table move, `import_payload`
+  atomicity, and the `closeEvent` flush+shutdown order. Ask before adding coverage; do not stay
+  silent about the hole.
 - **Deliver and stop.** Once business-code changes pass `python -m compileall -q core ui main.py`
   (basic syntax/import), hand over and stop. Add `tools/check_names.py` when an import or a name was
   touched. The offscreen `MainWindow()` check is a tool for the agent itself, not a per-round ritual.
@@ -64,9 +75,30 @@ which beat the owner simply opening the app. **The one place a targeted check st
 a schema change / migration / anything that can lose user data**: run it against a **copy** of
 `data/study_hub.db`, never the live file, and ask first even then.
 
-**CLAUDE.md and the data-model parts of `PRODUCT_SPEC`** stay accurate — a wrong note there misleads
-every future session. `DESIGN.md` and the per-page narrative sections can lag; that is accepted. Doc
-sync waits until the owner asks for it or a big phase closes.
+**Check the tree before your first edit.** `git status --short`, then `git diff` on anything it lists.
+Writing into a working tree that already carries uncommitted work means the second writer's change
+silently overwrites the first's, and here the collision points are predictable: `core/database.py`
+(the single data layer), `CLAUDE.md` and `docs/PRODUCT_SPEC.md` are the three files *any* behavior
+change must touch, so two tasks with **zero feature overlap** still collide there. That happened on
+2026-10-09 — an export-sanitization fix and a `resume_context` payload change both edited
+`core/database.py`, and the only reason nothing was lost is that the two edit sites happened to sit
+in different functions. If the file is dirty and the change is not yours, work on a copy or a branch,
+or stop and report the overlap. Same rule for commits that delete code: the blast radius has to fit
+the message — `d4d4abb` ("fix UI visuals") dropped position persistence and `3b8e81c` ("fix inverted
+icons") deleted ~1,600 lines of tests, and nothing caught either.
+
+**CLAUDE.md and the data-model parts of `PRODUCT_SPEC` stay accurate — a wrong note there misleads
+every future session.** So: **a behavior change carries its spec update in the same commit.** If a
+commit adds, removes or changes what the tool does, that same commit updates the affected
+`PRODUCT_SPEC` rows, bumps its version with a one-line 修订 entry, and refreshes the version
+references in `AGENTS.md` and `README.md`. Do not defer documentation to "when a phase closes" or
+"when the owner asks" — both triggers have already failed once: the Anki removal and the
+position-persistence removal landed on 2026-10-09, two days *after* the last phase-close sync, and
+`PRODUCT_SPEC` then spent three days claiming a feature with zero references in the code.
+
+`DESIGN.md` and the per-page narrative sections may still lag; that is accepted. For a pure factual
+error use an inline `〔vX.Y 更正〕` tag (the convention set in §3's v1.7 correction) rather than
+bumping the design version.
 
 ### The offscreen check cannot validate fonts or typography
 
@@ -90,14 +122,16 @@ Pages sit in a `QStackedWidget`. Indices **0–4** are the five module views, wh
 |---|---|
 | `ui/theme.py` | The entire stylesheet, one string. All color/size values live here |
 | `ui/fonts.py` | Loads Pretendard, exposes `FONT_STACK`, sets the app base font |
-| `ui/icons.py` | 32 monochrome line icons as inline SVG strings, rendered via `QtSvg` with a cache |
+| `ui/icons.py` | 43 monochrome line icons as inline SVG strings, rendered via `QtSvg` with a cache |
 | `ui/style.py` | `restyle()` / `set_state()` — runtime `objectName` switching |
 | `ui/components.py` | `EmptyState`, `Banner`, `InlineProgress`, `Toast` / `show_toast()` |
+| `core/audio.py` | P2 audio-library filesystem side — `copy_into_library()` (`.part` + `os.replace` atomic), `content_hash()`, `disk_report()`, `delete_from_library()` (path-escape guarded). Writes only into `data/audio/`, never the user's source files, and **never touches sqlite** |
+| `core/tts.py` | P1 单词发音 — `clean_korean_for_tts()`, Azure/Google synthesis + `data/tts/` cache, `WordSpeaker` (cache → background fetch → offline `QTextToSpeech` fallback), plus `TTSNetworkProbeWorker` / `BatchTTSPreloadWorker` / `_TTSFetchWorker`. Also **never touches sqlite** |
 | `ui/planner_view.py` | P0 今日学习 — 四个指标、两张补充卡、本周概览；**只读现成的表，自身不产生任何记录**（见 *P0 今日学习的四个数*） |
 | `core/library.py` | P3 filesystem scan — `scan_material()`, `ScanWorker` (Qt thread), `pdf_page_count()`; plus `delete_file()` (recycle bin). The **scan** produces records only and writes nothing |
 | `core/snippets.py` | P4 snippet sources — `IMAGE_EXTS`, `collect_records()` (merges P3's index snapshot with a `scandir` of `data/snippets/`), `copy_image_into()` / `unique_destination()`. Produces records only; **writes nothing** |
-| `ui/assets/check.svg` | The one icon that must be a real file (QSS `image:` takes no data URI) |
-| `ui/settings_view.py` | P5 设置与数据 — exam info, material root path, ffmpeg self-check, data export/import & backup |
+| `ui/assets/check.svg` | The one icon that must be a real file (QSS `image:` takes no data URI). **Not the only asset**: `ui/assets/app_icon.png` + `app_icon.ico` are the window/taskbar icons, loaded by `main.py` / `main_window.py` via `QPixmap` |
+| `ui/settings_view.py` | P5 设置与数据 — exam info, material root path, ffmpeg self-check, audio devices, TTS voice/key, data export/import & backup |
 | `ui/onboarding.py` | P6 first-launch wizard — modal `QDialog`, 3 skippable steps; shown once from `main.py` while `settings.onboarded != '1'` |
 
 ### P0 今日学习的四个数
@@ -158,9 +192,10 @@ Things that are easy to get wrong here:
 
 ### P2 影子跟读的录音与混音
 
-- **Lock reference audio at recording start (`self.recorded_ref_audio_path`)**: users may switch playlists or tracks before/after recording. `start_recording()` captures `self.current_audio_path` so `FFmpegWorker` mixes against the actual track that was shadowed, and falls back to saving the pure vocal recording if the reference stream is invalid or `amix` fails.
-- **Recording filename convention**: named after the active playlist and question range + attempt number (`影子跟读 {届数}届{起止题号}第{N}次.mp3`), with a direct toolbar button to open `data/recordings/`.
+- **The reference track is rebuilt from a *timeline*, not locked at record time.** Qt 没有把播放器输出接进捕获链的公开接口，Windows 的环间采集在 QtMultimedia 里也没开放，所以混音是**事后按轨迹重建**：录音期间每一次起播 / 暂停 / 跳转 / 换语速都开一段、封一段（`_rec_open_segment` / `_rec_close_segment` / `_rec_jump`），每段记「录音内起止秒、原音文件、原音内部起点、当时语速」，录完照轨迹剪回原音该在的位置（`_mix_args`）。这样"只念一半就停手"不会让后半段接着放原音，"念到中间拖了进度条或换曲目"也不会贴错片段。轨迹段时长 < 0.15s 的碎片会被丢掉（防止 `amix` 空帧崩溃）；混音失败时**人声那条还在**，不会两头落空。(此机制取代了 v1.11 文档里写的"开录时锁定单一参考音轨 `recorded_ref_audio_path`——那个字段已不存在。)
+- **Recording filename convention**: named after the active playlist and question range + attempt number (`影子跟读 {届数}届{起止题号}第{N}次.mp3`), with a direct toolbar button to open `data/recordings/`. 序号 N 是**全局**的：遍历录音目录所有子目录里已有的 `影子跟读…第N次` 取最大值 +1。
 - **Playlist status restraint & 70% listen count**: Only the single currently active track (`item["track_id"] == self.track_id`) displays the `warning` status dot and `"在听"` micro-pill; all other tracks hide the status dot and `"未听/在听"` text to prevent visual noise. Listen count (`已听 N 次`) is computed without schema changes via `_listen_count(item)` (`listened_ms // int(duration_ms * 0.7)`), counting 1 time per 70% of track duration actually listened.
+- **`position_ms` is no longer written or restored** (owner's deliberate decision, `PRODUCT_SPEC` v1.12). `track_progress.position_ms` stays in the schema (dropping a column has only tidiness value) but nothing writes it and `load_track()` never seeks back. `_pending_position` in `shadowing_view.py` is therefore dead — it is only ever `None`. **Do not "fix" this by re-adding position persistence without asking** — it was removed on purpose. The one place it used to surface was P0's 「继续上次」 audio row (`上次听到 MM:SS`), which showed `0:00` forever; that pill was removed outright in v1.13 rather than given a substitute reading, and `_mmss()` / `resume_context()["position_ms"]` went with it.
 
 ### P3 资料库的索引
 
@@ -306,7 +341,7 @@ When catching exceptions around user data, catch specific types (`OSError`, `Uni
 
 **To add a column/table:** bump `SCHEMA_VERSION`, add it to `_SCHEMA_SQL`, and (for existing tables) to `_ADDED_COLUMNS`. A fresh DB gets the new shape directly; an existing one gets ALTERed. Do **not** rely on `CREATE TABLE IF NOT EXISTS` alone — that was the old bug.
 
-Tables: `settings` (key/value + `updated_at`; keys include `exam_date`, `exam_label`, `material_root`, `schema_version`, `last_indexed_at`, `onboarded`), `tasks`, `activity_log` (append-only; `shadowing_minutes` written by the shadowing view — **one row per flush**, `material_opened` by the vault view — deduped per file per day with `amount` accumulating, `vocab_triaged` / `vocab_drilled` by P1 via `note_vocab_progress` — deduped per type per day, so P0 must **sum by type** rather than read one row per segment), `word_lists`, `words`, `word_notes`, `word_list_progress`, `word_state_log`, `materials`, `material_tags`, `material_usage`, `reading_progress`, `snippets`, `snippet_tags`. (`ocr_script_path` is a dead key still present in older databases — nothing reads it.) **schema v3** added the four material tables, **v8** added the two snippet tables; both are pure additive steps (new tables only — nothing to carry over, but the migration still backs up first, because that is the rule).
+Tables: `settings` (key/value + `updated_at`; keys include `exam_date`, `exam_label`, `material_root`, `schema_version`, `last_indexed_at`, `onboarded`, `recording_dir`, `audio_output_device` / `audio_input_device`, `tts_mode`, `tts_voice`, `tts_auto_play`, `azure_speech_key` / `azure_speech_region`, plus P2/P3/P4 的 UI 记忆键如 `shadowing_dual_layout` / `shadowing_splitter_widths`), `tasks`, `activity_log` (append-only; `shadowing_minutes` written by the shadowing view — **one row per flush**, `material_opened` by the vault view — deduped per file per day with `amount` accumulating, `vocab_triaged` / `vocab_drilled` by P1 via `note_vocab_progress` — deduped per type per day, so P0 must **sum by type** rather than read one row per segment), `word_lists`, `words`, `word_notes`, `word_list_progress`, `word_state_log`, `materials`, `material_tags`, `material_usage`, `reading_progress`, `snippets`, `snippet_tags`, **P2 音频库六张**：`audio_tracks`, `playlists`, `playlist_items`, `track_progress`, `track_segments`, `playback_state`. (`ocr_script_path` is a dead key still present in older databases — nothing reads it; `vocab_last_list_id` is the same, also unread. Both deliberately left alone.) **schema 演进**：v2 drop `word_states`、v3 资料库四表、v4 路径规范化、v5 音频库六表、v6/v7/v9 `playlists` / `playlist_items` 的 PDF 与页码列、v8 碎片两表；v5/v6/v7/v8/v9 都是**纯加法**（新表或新列，没有要搬运的旧数据，但迁移仍然先备份——规则就是规则）。
 
 **Word data follows the two-layer rule (`PRODUCT_SPEC` 6.1):** `words` is first-layer (rebuildable from TSV); `word_notes` is second-layer (a user's note, three-state `known`/`fuzzy`/`unknown`, drill rounds, starred) and **must never be lost**. `word_notes` is keyed by **`korean` alone** (D2) — the old `korean␟meaning` key was migrated and the `word_states` table dropped in schema v2 (each old starred row became `is_starred=1` **and** `state='unknown'`, per 6.4 #6). The word API is `get_word_note(korean)` / `save_word_note(korean, note, is_starred)` / `set_word_state(korean, state)` / `drill_queue(list_id=None)`; `save_word_note` deliberately does not touch `state`.
 
@@ -345,17 +380,50 @@ P1's 「从 PDF 提取」 button and its `OCRWorker`, P4's 「提取图片文字
 
 The interchange format is what must now be preserved. `vocab_view.load_tsv` reads it and is the contract: **3 tab-separated columns — `编号 / 韩语 / 中文` — no header row, `utf-8-sig`, `\t` separator**. It silently drops rows with fewer than 3 columns or an empty 韩语 column, and silently substitutes the line number when 编号 isn't an integer. A header row is imported as a real word and its fallback seq collides with row 1. `core/database.py:import_word_list` then `strip()`s both text columns. See `samples/README.md`.
 
-**Orphan key:** existing databases still carry a `settings.ocr_script_path` row. Nothing reads or writes it. It is deliberately left alone — deleting a key/value row is a data migration whose only benefit is tidiness.
+**Orphan key:** existing databases still carry a `settings.ocr_script_path` row. Nothing reads or writes it. It is deliberately left alone — deleting a key/value row is a data migration whose only benefit is tidiness. (`vocab_last_list_id` is the same story.)
+
+### Anki export was removed (2026-10-09) — read this before re-adding it
+
+P1's 「Anki 导出」 button, P5's 「Anki 导出」 button, `database.anki_rows()` / `export_anki_file()` / `count_anki_export_words()`, and the three test files that covered them (`tests/test_anki_export_stress.py`, `test_anki_forensic.py`, `test_settings_anki_adversarial.py` — ~1,600 lines) are **all gone**. `PRODUCT_SPEC` was at v1.11 claiming it was done; v1.12 corrects every mention.
+
+Why it went, for the record: the export duplicated `PRODUCT_SPEC` §4.2 专攻模式 already being the drill queue (both answer "which words don't I know yet"), nothing in the repo or `docs/progress.md` shows it was ever used against a real Anki deck, and it carried ~1,600 lines of test surface for a one-shot TSV writer. The data it needed (`word_notes.state`) is still there and still exported by the JSON backup, so re-adding it is a ~60-line job, not a migration.
+
+The cost of removing it: **`PRODUCT_SPEC` §10 第 7 期 item 8, §4.2 扩展方向, §6.5, §1.2 边界, and 附录 B all claimed it existed.** That is how a feature ends up documented as ✅ while the code has zero references to it. `docs/universal_exam_hub_refactoring_plan.md` also still lists Anki 导出 as an existing asset — it is a plan, not a record, and it is wrong on that point.
+
+### Playback-position persistence was removed (2026-10-09)
+
+`track_progress.position_ms` is in the schema but **nothing writes it and `load_track()` never seeks back**. This is deliberate, not a regression — the column survives only because dropping a column has no benefit beyond tidiness. `shadowing_view._pending_position` is now dead code (only ever `None`).
+
+The UI tail was cut off on the same day: P0's 「继续上次」 audio row used to end with `上次听到 MM:SS`, which became `0:00` the moment position stopped being persisted. **v1.13 removed the pill instead of substituting a reading** — `已听 N 次` and cumulative listen time already live on P2's list row and track meta line, and repeating them on the home screen just spends a second card slot on the same fact. `ui/planner_view._mmss()` and `resume_context()["position_ms"]` were deleted along with it.
+
+If a position reading is ever wanted on the home screen again, the prerequisite is restoring position *persistence* — not picking a number that looks plausible. `position_ms` can be reset to zero (restart from the top), `listened_ms` only ever grows; they are not interchangeable (see `PRODUCT_SPEC` 4.1).
 
 ### Threading
 
-Long operations run on `QThread` subclasses reporting via `Signal`: `FFmpegWorker` (shadowing), `ScanWorker` (P3's index scan), `ThumbnailWorker` (P4's thumbnails). Connect signals before `start()`, and mutate widgets only in the handlers. **None of them touches sqlite** — one connection is shared by all six views (`check_same_thread`), so a thread produces data and the main thread writes it.
+Long operations run on `QThread` subclasses reporting via `Signal`: `FFmpegWorker` (shadowing mix), `ScanWorker` (P3's index scan), `ThumbnailWorker` (P4's thumbnails), and the three in `core/tts.py` — `TTSNetworkProbeWorker` (P5 network probe), `BatchTTSPreloadWorker` (P1 batch cache warm-up), `_TTSFetchWorker` (P1 single-word fetch). Connect signals before `start()`, and mutate widgets only in the handlers. **None of them touches sqlite** — one connection is shared by all six views (`check_same_thread`), so a thread produces data and the main thread writes it.
+
+The TTS workers are the ones that can outlive a timeout: `_TTSFetchWorker._fetch_google_tts` tries **three endpoints at 4.5 s each** and `TTSNetworkProbeWorker` three at 4 s, while `cancel()` only flips a flag that is checked *between* requests. `WordSpeaker.shutdown()` and `SettingsView.shutdown()` both `wait(1500)` — shorter than that worst case. Expect a "Destroyed while thread is still running" on exit if the network is slow.
 
 `shadowing_view.py` accumulates listened milliseconds in `unlogged_ms` and flushes whole minutes to `activity_log` on pause, on audio reload, and from `MainWindow.closeEvent`. If you add another exit path, flush there too or the time is lost.
 
 `vocab_view.py` has the mirror-image hazard: notes autosave on a **1.5 s debounce**, so at any moment there may be text that is typed but not yet in SQLite. `_flush_note()` runs on word change, mode change, list change, `hideEvent`, and `MainWindow.closeEvent`. The original code only saved when switching to another word, so closing the app lost whatever was being typed — the exact bug `PRODUCT_SPEC` 4.2 calls out. **Any new path out of the page needs a flush.**
 
-`snippets_view.py` (the `snippets.note` column and the title field) is the same pattern a third time, with the same 1.5 s debounce and the same two flush points. `MainWindow.closeEvent` therefore owes the exit path five things now: the shadowing minute-flush, P1's pending note, P4's pending note/title, and `shutdown()` on both P3's scan thread and P4's thumbnail thread.
+`snippets_view.py` (the `snippets.note` column and the title field) is the same pattern a third time, with the same 1.5 s debounce and the same two flush points.
+
+`MainWindow.closeEvent` therefore owes the exit path **eight things, in this order** — 三次冲刷 + 五次收线程，然后才关库：
+
+| # | 调用 | 不做的后果 |
+|---|---|---|
+| 1 | `shadowing_view.flush_study_session()` | 丢掉尚未凑满整分钟的跟读时长、AB 点、语速、曲目状态 |
+| 2 | `vocab_view.flush_pending()` | 丢掉 P1 防抖窗口里正在编辑的笔记 |
+| 3 | `snippets_view.flush_pending()` | 丢掉 P4 防抖窗口里的说明与标题 |
+| 4 | `vocab_view.shutdown()` | 批量预下载线程与发音线程还在跑；P1 的发音播放不收干净 |
+| 5 | `settings_view.shutdown()` | `TTSNetworkProbeWorker` 还在跑（**这一条最早不在清单里，是后补的**） |
+| 6 | `vault_view.shutdown()` | `ScanWorker` 被销毁时 Qt 打印 "Destroyed while thread is still running" |
+| 7 | `shadowing_view.shutdown()` | `FFmpegWorker` 跑完只剩半截合成产物；录音中的会话要收干净 |
+| 8 | `snippets_view.shutdown()` | `ThumbnailWorker` 同上 |
+
+顺序有意义：冲刷必须全部早于收线程与 `database.close()`。`flush_study_session()` 自己有 `_closed` 守卫——关库之后 Qt 还会发一次 `hideEvent`，那时再写库就是 `Cannot operate on a closed database`，用户看到的是"关窗口报错"。新增任何出口（新页面、新线程、新的防抖字段）都要在这里补一行。
 
 ## Other directories
 

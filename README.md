@@ -43,7 +43,7 @@ Windows 上也可以双击 `Start_Study_Hub.bat`（内部是 `pythonw main.py`�
 | 路径 | 内容 |
 |---|---|
 | `data/study_hub.db` | SQLite 数据库，全部记录都在这里 |
-| `data/backup/` | 迁移前的自动备份与每日备份（各保留最新 7 份） |
+| `data/backup/` | 迁移前的自动备份与每日备份（合计保留最新 7 份，超出即删） |
 | `data/audio/` | 音频库 |
 | `data/recordings/` | 跟读录音 |
 | `data/snippets/` | 粘贴 / 导入进来的图片 |
@@ -65,12 +65,12 @@ ui/
   main_window.py      组合根 —— 唯一构造视图的地方，六个视图共享一个 StudyDatabase
   theme.py            整个样式表，一个字符串；色值全部来自 design/DESIGN.md
   fonts.py            Pretendard 加载与字体栈
-  icons.py            32 个内联 SVG 线性图标
+  icons.py            43 个内联 SVG 线性图标
   style.py            restyle() / set_state()，运行时切换 objectName
   components.py       EmptyState / Banner / InlineProgress / Toast
   *_view.py           六个页面
 docs/
-  PRODUCT_SPEC.md     权威产品规格 v1.11（功能、页面、数据模型、决策 D1–D16、路线图）
+  PRODUCT_SPEC.md     权威产品规格 v1.14（功能、页面、数据模型、决策 D1–D16、路线图）
 design/
   DESIGN.md           权威视觉规格 v1.8（色板 / 字号 / 间距 token，Linear 派生的 10 条规则）
 USER_CONTEXT.md       实际学习投入时间统计规范与原则
@@ -117,7 +117,7 @@ Pretendard **不含简体中文字形**（实测 11/11 缺失），中文必须�
 
 ## 文档
 
-- `docs/PRODUCT_SPEC.md` —— 权威产品规格（v1.11）。功能边界、页面结构、数据模型、决策记录 D1–D16 都在这里，改行为前先读它
+- `docs/PRODUCT_SPEC.md` —— 权威产品规格（v1.14）。功能边界、页面结构、数据模型、决策记录 D1–D16 都在这里，改行为前先读它
 - `design/DESIGN.md` —— 权威视觉规格（v1.8）
 - `USER_CONTEXT.md` —— 学习时间记录需求与设计原则
 - `CLAUDE.md` / `AGENTS.md` —— 给 coding agent 的项目说明：架构、踩过的坑、每条踩坑背后的实测证据

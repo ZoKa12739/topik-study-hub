@@ -1505,6 +1505,12 @@ class VocabView(QWidget):
         if list_id is None:
             self.btn_batch_tts.setVisible(False)
             return
+        # 批量预缓存是**联网工作流的一环**：本地模式下整块隐藏——联网默认关闭、
+        # 逐项显式开启（PRODUCT_SPEC D11 方案 A）。用户在 P5 显式选了联网音质，
+        # 这个下载入口才出现。
+        if self.database.get_tts_mode() != "online":
+            self.btn_batch_tts.setVisible(False)
+            return
 
         self.btn_batch_tts.setVisible(True)
         if (
@@ -1530,6 +1536,10 @@ class VocabView(QWidget):
     def _check_and_prompt_tts_cache(self, list_id):
         """切换词表时：如当前词表有未缓存单词，自动弹条提示一键触发预缓存。"""
         if list_id is None:
+            return
+        # 与批量下载按钮同一道闸：只有显式选了联网发音的用户才会被提示去下载
+        # 云端音频（D11：默认关闭、逐项显式开启）。
+        if self.database.get_tts_mode() != "online":
             return
         if self._batch_tts_worker is not None and self._batch_tts_worker.isRunning():
             if self._batch_list_id != list_id:

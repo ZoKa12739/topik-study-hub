@@ -319,13 +319,16 @@ class SettingsView(QWidget):
         box = self._group(
             layout,
             "单词发音",
-            "智能单词仓（P1）的韩语发音设置。联网模式下通过 Azure AI Speech 高保真神经网络声音"
+            "智能单词仓（P1）的韩语发音设置。**默认使用系统本地韩语语音、完全离线**；"
+            "仅当你把「发音音源」切到联网时，才通过 Azure AI Speech 高保真神经网络声音"
             "（或 Google 语音服务）生成音频并自动缓存在本机，同一单词再次朗读直接秒播；断网时自动退回系统离线语音。",
         )
 
         self.combo_tts_mode = QComboBox()
-        self.combo_tts_mode.addItem("云端高保真联网发音（推荐，自动缓存到本地）", "online")
-        self.combo_tts_mode.addItem("仅使用系统本地韩语语音（完全离线）", "local")
+        # 默认项即规格默认值（D11 方案 A：联网功能默认关闭、逐项显式开启）；
+        # 在线是用户在 P5 主动选择的增强项，不是"推荐"。
+        self.combo_tts_mode.addItem("仅使用系统本地韩语语音（完全离线，默认）", "local")
+        self.combo_tts_mode.addItem("联网 TTS 云端音质（Azure / Google，需联网）", "online")
         self._field_row(box, "发音音源", self.combo_tts_mode, caption_width=110)
 
         self.combo_tts_voice = QComboBox()
@@ -335,7 +338,7 @@ class SettingsView(QWidget):
 
         self.input_azure_key = QLineEdit()
         self.input_azure_key.setEchoMode(QLineEdit.Password)
-        self.input_azure_key.setPlaceholderText("Azure Speech 密钥（已预填，可直接使用）")
+        self.input_azure_key.setPlaceholderText("未配置——联网 Azure 发音前需在此填入自己的密钥")
         self.btn_toggle_key = QPushButton("显示")
         self.btn_toggle_key.setObjectName("iconButton")
         self.btn_toggle_key.clicked.connect(self._toggle_azure_key_visibility)
@@ -416,7 +419,7 @@ class SettingsView(QWidget):
         self.combo_tts_voice.blockSignals(False)
 
     def save_tts_settings(self):
-        mode = self.combo_tts_mode.currentData() or "online"
+        mode = self.combo_tts_mode.currentData() or "local"
         voice = self.combo_tts_voice.currentData() or TTS_VOICES[0][0]
         self.database.set_tts_mode(mode)
         self.database.set_tts_voice(voice)
@@ -507,7 +510,9 @@ class SettingsView(QWidget):
             layout,
             "数据",
             "导出只包含**不可重建**的数据（任务、活动、笔记与词状态、断点、配置、碎片标题与说明）；"
-            f"词条、文件索引等可从源文件重建的内容不导出。备份保留最近 {BACKUP_KEEP} 份。",
+            "词条、文件索引等可从源文件重建的内容不导出。**任何密钥都不写入导出备份**"
+            "（只保存在本机，换设备后需在「单词发音」里重新填入）。"
+            f"备份保留最近 {BACKUP_KEEP} 份。",
         )
 
         self.lbl_usage = QLabel("存储占用：计算中…")

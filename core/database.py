@@ -38,7 +38,6 @@ from core.config import (
     BACKUP_DIR,
     DATABASE_PATH,
     DATA_DIR,
-    DEFAULT_AZURE_KEY,
     DEFAULT_AZURE_REGION,
     DEFAULT_EXAM_DATE,
     DEFAULT_EXAM_LABEL,
@@ -79,6 +78,11 @@ SECOND_LAYER_TABLES = (
     "snippets",
     "snippet_tags",
 )
+
+# 备份里**不得出现**的 settings 键（PRODUCT_SPEC 12.5 第 3 条："密钥只存本机，
+# 且不进备份——否则用户把备份放到网盘就等于泄露密钥"）。导出时剔除这些行，
+# 导入时即使文件里被人为塞了这些键也一律忽略（密钥只应由本机 P5 写入）。
+SECRET_SETTING_KEYS = ("azure_speech_key",)
 
 # 单词仓往活动日志里写的两个事件（5.2）。过词与专攻通过**分开计**——5.4 说它们
 # 代表"不同性质的努力"，合成一条等于把两次不同的努力相加。
@@ -815,11 +819,16 @@ class StudyDatabase:
         self.set_setting("tts_voice", valid)
 
     def get_azure_speech_key(self) -> str:
-        """获取 Azure Speech 密钥，优先读取环境变量，回退至本地 settings。"""
+        """获取 Azure Speech 密钥，优先读取环境变量，回退至本地 settings。
+
+        两者都为空时返回空串——**工具不提供任何默认密钥**（BYOK，PRODUCT_SPEC
+        12.5：密钥由用户自带。这里曾经有一个硬编码的真实密钥，已删除）。
+        空串在上层表现为"联网 Azure 发音不可用"，由 P5 提示用户去填。
+        """
         env_key = os.environ.get("AZURE_SPEECH_KEY", "").strip()
         if env_key:
             return env_key
-        return self.get_setting("azure_speech_key", DEFAULT_AZURE_KEY).strip()
+        return self.get_setting("azure_speech_key", "").strip()
 
     def set_azure_speech_key(self, key: str):
         self.set_setting("azure_speech_key", (key or "").strip())
@@ -2695,12 +2704,17 @@ class StudyDatabase:
     def export_payload(self):
         """导出**第二层数据**为可 JSON 序列化的字典（6.5）。
 
-        不含第一层（词条、文件索引、音频本体）——那些可重建，导出也更小更易读。
-        不含任何密钥（当前版本尚无密钥，占位说明见 P5）。
+         不含第一层（词条、文件索引、音频本体）——那些可重建，导出也更小更易读。
+         **不含任何密钥**（12.5 第 3 条）：`settings` 表里的 `SECRET_SETTING_KEYS`
+         整行剔除，备份落到网盘也不泄露凭据。
         """
         data = {}
         for table in SECOND_LAYER_TABLES:
             rows = self.connection.execute(f"SELECT * FROM {table}").fetchall()
+            if table == "settings":
+                rows = [
+                    row for row in rows if row["key"] not in SECRET_SETTING_KEYS
+                ]
             data[table] = [dict(row) for row in rows]
         return {
             "app": "TOPIK Study Hub",
@@ -2738,6 +2752,14 @@ class StudyDatabase:
         if not isinstance(data, dict):
             raise ValueError("备份内容缺少 data 段")
 
+        # 密钥只由本机写入（12.5）：`DELETE FROM settings` 会连本机密钥一起冲掉，
+        # 先把密钥行读出来，事务末尾原样写回。备份文件里即使出现密钥行也不导入。
+        local_secret_rows = [
+            (row["key"], row["value"])
+            for row in self.connection.execute("SELECT key, value FROM settings").fetchall()
+            if row["key"] in SECRET_SETTING_KEYS
+        ]
+
         restored = {}
         with self.connection:  # 成功即提交，异常自动回滚
             for table in SECOND_LAYER_TABLES:
@@ -2746,6 +2768,12 @@ class StudyDatabase:
                     continue
                 if not isinstance(rows, list):
                     raise ValueError(f"备份中 {table} 段不是列表")
+                if table == "settings":
+                    # 密钥不随备份迁移（12.5）：备份里出现也一律忽略。
+                    rows = [
+                        row for row in rows
+                        if isinstance(row, dict) and row.get("key") not in SECRET_SETTING_KEYS
+                    ]
                 columns = self._column_names(table)
                 self.connection.execute(f"DELETE FROM {table}")
                 for row in rows:
@@ -2761,6 +2789,12 @@ class StudyDatabase:
                         tuple(usable.values()),
                     )
                 restored[table] = len(rows)
+            for key, value in local_secret_rows:
+                self.connection.execute(
+                    "INSERT OR REPLACE INTO settings (key, value, updated_at) "
+                    "VALUES (?, ?, CURRENT_TIMESTAMP)",
+                    (key, value),
+                )
         return restored
 
     def import_from_file(self, path):

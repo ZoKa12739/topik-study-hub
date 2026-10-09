@@ -92,7 +92,8 @@ class OnboardingDialog(QDialog):
         box.addWidget(title)
         intro = QLabel(
             "一个本地优先的备考工具箱：单词仓、影子跟读、资料库与知识碎片，"
-            "学习记录会自动沉淀在**这台设备**上，不需要联网。"
+            "学习记录与全部数据只保存在**这台设备**上。核心功能完全离线、不需要联网；"
+            "联网增强功能默认全部关闭，需要时可在「设置与数据」里逐项开启。"
         )
         intro.setObjectName("pageSubtitle")
         intro.setWordWrap(True)

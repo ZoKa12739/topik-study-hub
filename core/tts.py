@@ -24,7 +24,7 @@ from pathlib import Path
 from PySide6.QtCore import QLocale, QObject, QThread, QUrl, Signal
 from PySide6.QtMultimedia import QAudioOutput, QMediaDevices, QMediaPlayer
 
-from core.config import DEFAULT_AZURE_KEY, DEFAULT_AZURE_REGION, DEFAULT_TTS_VOICE, TTS_DIR
+from core.config import DEFAULT_AZURE_REGION, DEFAULT_TTS_VOICE, TTS_DIR
 
 TTS_VOICES = (
     ("azure_ko_dragon_hd", "Azure SunHi Dragon HD Latest（高清自然，推荐）"),
@@ -163,8 +163,12 @@ def synthesize_azure(
     region: str = "",
     timeout: float = 8.0,
 ) -> bytes:
-    """通过 Azure AI Speech REST API 合成高保真韩语音频字节流。"""
-    active_key = (key or os.environ.get("AZURE_SPEECH_KEY") or DEFAULT_AZURE_KEY).strip()
+    """通过 Azure AI Speech REST API 合成高保真韩语音频字节流。
+
+    密钥来源只有两个：调用方传入（用户在 P5 填的那个）或 `AZURE_SPEECH_KEY`
+    环境变量——BYOK，工具侧不持有任何默认密钥（PRODUCT_SPEC 12.5）。
+    """
+    active_key = (key or os.environ.get("AZURE_SPEECH_KEY") or "").strip()
     active_region = (region or os.environ.get("AZURE_SPEECH_REGION") or DEFAULT_AZURE_REGION).strip()
     if not active_key:
         raise RuntimeError("未配置 Azure Speech Key")
@@ -211,8 +215,8 @@ def probe_azure_tts(
     voice: str = "azure_ko_dragon_hd",
     timeout: float = 5.0,
 ) -> tuple[bool, str]:
-    """实测 Azure AI Speech 的网络连通性与响应延迟。"""
-    active_key = (key or os.environ.get("AZURE_SPEECH_KEY") or DEFAULT_AZURE_KEY).strip()
+    """实测 Azure AI Speech 的网络连通性与响应延迟。密钥同样仅来自参数或环境变量。"""
+    active_key = (key or os.environ.get("AZURE_SPEECH_KEY") or "").strip()
     active_region = (region or os.environ.get("AZURE_SPEECH_REGION") or DEFAULT_AZURE_REGION).strip()
     if not active_key:
         return False, "未配置 Azure Speech Key"

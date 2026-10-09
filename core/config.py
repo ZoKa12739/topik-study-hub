@@ -51,8 +51,17 @@ _SKIP_DIRS = {"TOPIK_Study_Hub", "_font_cache", "__pycache__", ".git", ".workbud
 DEFAULT_EXAM_DATE = "2027-04-11"
 DEFAULT_EXAM_LABEL = "第 109 届 TOPIK 考试"
 
-# 默认单词发音配置（F3 & Azure AI Speech）
-DEFAULT_TTS_MODE = "online"
+# 默认单词发音配置（F3：本地优先，联网增强）。
+#
+# 发音**默认走系统本地韩语语音**：PRODUCT_SPEC D11 方案 A 要求"联网功能默认全部关闭、
+# 逐项显式开启"，12.2 F3 同样要求"联网 TTS 仅在用户显式开启后使用"。默认值只是
+# **首次播种**进 settings 的起点，用户在 P5 的切换会覆盖它。
+#
+# **密钥不设任何默认值**（BYOK，12.5 第 1/3 条）：Azure Speech Key 一律由用户在 P5
+# 填入、或通过 AZURE_SPEECH_KEY 环境变量提供，只存在于本机，不写入导出备份。
+# 这里曾经硬编码过一个真实密钥——那是安全事故，不要以任何形式把它加回来。
+# 区域只是服务端点的一部分、不是凭据，保留默认值无妨。
+DEFAULT_TTS_MODE = "local"
 DEFAULT_TTS_VOICE = "azure_ko_dragon_hd"
 DEFAULT_AZURE_REGION = "eastus"
 

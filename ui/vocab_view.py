@@ -66,6 +66,18 @@ from PySide6.QtWidgets import (
 from core.tts import BatchTTSPreloadWorker, WordSpeaker, count_uncached_words
 from ui.components import Banner, EmptyState, LabelMotion, make_copyable, show_toast
 from ui.icons import icon
+from ui.motion import (
+    DELAY_MEANING,
+    DELAY_WORD,
+    DUR_BASE,
+    DUR_MICRO,
+    DUR_REVEAL,
+    DUR_SOFT,
+    DX_MEANING,
+    DX_SEQ,
+    DX_WORD,
+    DY_REVEAL,
+)
 from ui.style import restyle
 from ui.theme import (
     ACCENT,
@@ -791,9 +803,14 @@ class VocabView(QWidget):
         self.lbl_pass_hint.setAlignment(Qt.AlignCenter)
         box.addWidget(self.lbl_pass_hint)
 
-        # 动效对象（绑定在本 View 上防 GC）：只服务揭示与回退，不服务判断
-        self._meaning_motion = LabelMotion(self, self.lbl_pass_cn)
-        self._word_motion = LabelMotion(self, self.lbl_pass_kr)
+        # 换词编排（绑定在本 View 上防 GC）：序号 → 大字 → 释义依次落位，
+        # 卡片外框 / 按钮 / 进度条不动。参数唯一出处是 ui/motion.py。
+        self._pass_entrance = (
+            LabelMotion(self, self.lbl_pass_seq),
+            LabelMotion(self, self.lbl_pass_kr),
+            LabelMotion(self, self.lbl_pass_cn),
+        )
+        self._meaning_motion = self._pass_entrance[2]
 
         page_layout.addWidget(card)
         return page
@@ -915,8 +932,12 @@ class VocabView(QWidget):
         self.lbl_drill_hint.setAlignment(Qt.AlignCenter)
         box.addWidget(self.lbl_drill_hint)
 
-        # 与过词卡对称：回退时只让大字滑入，卡片本身不动
-        self._drill_word_motion = LabelMotion(self, self.lbl_drill_kr)
+        # 与过词卡对称：换词编排同样三层错峰，只滑内容不滑卡片
+        self._drill_entrance = (
+            LabelMotion(self, self.lbl_drill_seq),
+            LabelMotion(self, self.lbl_drill_kr),
+            LabelMotion(self, self.lbl_drill_cn),
+        )
 
         card_wrapper = QWidget()
         card_w_layout = QVBoxLayout(card_wrapper)
@@ -1834,6 +1855,8 @@ class VocabView(QWidget):
         for button in self._judge_buttons.values():
             button.setEnabled(True)
         self._show_pass_current()
+        # 进入过词模式的第一个词也走一遍编排：切模式是个"用户主动 paced"的时刻
+        self._play_entrance(self._pass_entrance, direction=1)
 
     def _show_pass_current(self):
         finished = self._pass_index >= len(self._pass_rows)
@@ -1885,15 +1908,32 @@ class VocabView(QWidget):
             restyle(self.lbl_pass_cn, "faint")
             self.lbl_pass_cn.setText("释义已遮住 · 点击或按 Space 揭示")
 
+    @staticmethod
+    def _play_entrance(entrance, direction=1):
+        """换词编排：序号 → 大字 → 释义依次淡入落位（`ui/motion.py` 定参）。
+
+        三个都是**内容叶子**；卡片外框、按钮、进度条完全静止——那层静止的
+        chrome 是锚，约 180ms 的动效有了它才明显而不吵。
+
+        `direction=1` 从右侧入场（向前过词），`-1` 镜像（回退）。
+        连按时下一次从各标签的静止点重播（`LabelMotion` 保证不漂移），
+        输入永远不等动画——这是它敢出现在高频路径上的前提。
+        """
+        seq_motion, word_motion, meaning_motion = entrance
+        seq_motion.play(dx=DX_SEQ * direction, duration=DUR_MICRO)
+        word_motion.play(dx=DX_WORD * direction, duration=DUR_BASE, delay=DELAY_WORD)
+        meaning_motion.play(
+            dx=DX_MEANING * direction, duration=DUR_SOFT, delay=DELAY_MEANING
+        )
+
     def _toggle_reveal(self):
         if not self._keyboard_ok() or self._pass_index >= len(self._pass_rows):
             return
         self._revealed = not self._revealed
         self._render_pass_meaning()
         if self._revealed:
-            # 揭示是这张卡上唯一"值得有反馈"的动作：释义淡入并轻升 4px。
-            # 判断（1/2/3）走零动效——PRODUCT_SPEC 流程 B：无动画、无确认、无停顿。
-            self._meaning_motion.play(dy=-4, duration=110)
+            # 揭示是用户主动 paced 的动作，值得全卡最隆重的一次：释义上移淡入
+            self._meaning_motion.play(dy=-DY_REVEAL, duration=DUR_REVEAL)
 
     def _judge(self, state):
         """`1`/`2`/`3` 与三个按钮的共同入口。"""
@@ -1928,8 +1968,8 @@ class VocabView(QWidget):
         self._show_pass_current()
         if hasattr(self, "btn_pass_undo"):
             self.btn_pass_undo.setEnabled(bool(self._undo_stack))
-        # 判断动作零动效（PRODUCT_SPEC 流程 B：无动画、无确认、无停顿）：
-        # 这一遍要能几分钟过完几百个词，任何位移/淡入都会变成连按时的卡顿源。
+        # 状态先落库、文字先换好，动画只负责"落位"——不阻塞、不等待
+        self._play_entrance(self._pass_entrance, direction=1)
 
     def _undo_pass(self):
         """`Ctrl+Z` 退回上一个词（流程 B 第 7 条）：状态与断点一起还原。"""
@@ -1948,9 +1988,8 @@ class VocabView(QWidget):
         self._show_pass_current()
         if hasattr(self, "btn_pass_undo"):
             self.btn_pass_undo.setEnabled(bool(self._undo_stack))
-        # 回退是低频纠正动作，用方向性动效确认"真的退回去了"：
-        # 只滑大字（24px 对侧滑入 + 淡入），不动整张卡。
-        self._word_motion.play(dx=-24, duration=160)
+        # 回退整套镜像：从左侧入场，方向本身就是"退回去了"的反馈
+        self._play_entrance(self._pass_entrance, direction=-1)
 
     def _update_pass_progress(self):
         """`已过 320 / 1400 · 已标记 87`。
@@ -1986,6 +2025,8 @@ class VocabView(QWidget):
         self.drill_stack.setCurrentIndex(0)
         self._show_drill_current()
         self._sync_drill_undo_button()
+        # 同上：进入专攻的首词也落位一次
+        self._play_entrance(self._drill_entrance, direction=1)
 
     def _show_drill_current(self):
         if self._drill_index >= len(self._drill_rows):
@@ -2034,7 +2075,8 @@ class VocabView(QWidget):
         self._drill_index += 1
         self._show_drill_current()
         self._sync_drill_undo_button()
-        # 专攻判断同样零动效：切词要跟手（同过词，见 `_pass_judge` 注释）
+        # 与过词同一套编排；笔记区（QTextEdit）不参与——文本编辑器动起来只会碍事
+        self._play_entrance(self._drill_entrance, direction=1)
 
     def _undo_drill(self):
         """回退上一个专攻的词 (Ctrl+Z 或 点击回退按钮)。"""
@@ -2059,8 +2101,8 @@ class VocabView(QWidget):
             self.drill_stack.setCurrentIndex(0)
         self._show_drill_current()
         self._sync_drill_undo_button()
-        # 与过词回退对称：只滑大字，卡片不动
-        self._drill_word_motion.play(dx=-24, duration=160)
+        # 与过词回退对称：整套镜像，从左侧入场
+        self._play_entrance(self._drill_entrance, direction=-1)
 
     def _sync_drill_undo_button(self):
         if hasattr(self, "btn_drill_undo"):

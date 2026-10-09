@@ -15,7 +15,7 @@
 因此本项目不再用模态框报告可预期的失败。
 """
 
-from PySide6.QtCore import QEasingCurve, QPoint, QPropertyAnimation, QRectF, QSize, QTimer, Qt, Signal
+from PySide6.QtCore import QPoint, QPropertyAnimation, QRectF, QSize, QTimer, Qt, Signal
 from PySide6.QtGui import QColor, QFontMetrics, QIcon, QPainter
 from PySide6.QtWidgets import (
     QApplication,
@@ -37,6 +37,13 @@ from PySide6.QtWidgets import (
 )
 
 from ui.icons import icon
+from ui.motion import (
+    DUR_BASE,
+    DUR_TOAST_IN,
+    DUR_TOAST_OUT,
+    EASE_ENTER,
+    EASE_EXIT,
+)
 from ui.style import restyle
 from ui.theme import (
     ACCENT,
@@ -221,7 +228,6 @@ class Toast(QLabel):
 
     HOLD_MS = 2000
     DURATION_MS = HOLD_MS
-    ANIM_MS = 180
     SLIDE_OFFSET_Y = 8
 
     def __init__(self, parent):
@@ -273,15 +279,15 @@ class Toast(QLabel):
         self.move(start_pos)
         self._opacity_effect.setOpacity(0.0)
 
-        self._pos_anim.setDuration(self.ANIM_MS)
+        self._pos_anim.setDuration(DUR_TOAST_IN)
         self._pos_anim.setStartValue(start_pos)
         self._pos_anim.setEndValue(target)
-        self._pos_anim.setEasingCurve(QEasingCurve.OutCubic)
+        self._pos_anim.setEasingCurve(EASE_ENTER)
 
-        self._fade_anim.setDuration(self.ANIM_MS)
+        self._fade_anim.setDuration(DUR_TOAST_IN)
         self._fade_anim.setStartValue(0.0)
         self._fade_anim.setEndValue(1.0)
-        self._fade_anim.setEasingCurve(QEasingCurve.OutCubic)
+        self._fade_anim.setEasingCurve(EASE_ENTER)
 
         self.show()
         self.raise_()
@@ -292,10 +298,11 @@ class Toast(QLabel):
     def _start_fade_out(self):
         self._fade_anim.stop()
         self._fading_out = True
-        self._fade_anim.setDuration(self.ANIM_MS)
+        # 退场比入场略长，且换成 InCubic：加速离场，不拖尾
+        self._fade_anim.setDuration(DUR_TOAST_OUT)
         self._fade_anim.setStartValue(self._opacity_effect.opacity())
         self._fade_anim.setEndValue(0.0)
-        self._fade_anim.setEasingCurve(QEasingCurve.OutCubic)
+        self._fade_anim.setEasingCurve(EASE_EXIT)
         self._fade_anim.start()
 
     def _on_fade_finished(self):
@@ -353,8 +360,12 @@ class LabelMotion:
             self._effect.setOpacity(1.0)
             self._label.setGraphicsEffect(None)
 
-    def play(self, dx=0, dy=0, duration=110):
-        """从 `(dx, dy)` 偏移处淡入到静止位；`dx`/`dy` 为 0 时只做淡入。"""
+    def play(self, dx=0, dy=0, duration=DUR_BASE, delay=0):
+        """从 `(dx, dy)` 偏移处淡入到静止位；`dx`/`dy` 为 0 时只做淡入。
+
+        `delay` 是错峰延迟（ms）——同一次编排里几个标签依次落位，
+        靠的就是它；延迟期间标签在偏移起点且不可见，不会露出半截。
+        """
         label = self._label
         if label is None or not label.isVisible():
             return
@@ -377,16 +388,18 @@ class LabelMotion:
         self._effect.setOpacity(0.0)
 
         self._opacity_anim.setDuration(duration)
+        self._opacity_anim.setStartDelay(delay)
         self._opacity_anim.setStartValue(0.0)
         self._opacity_anim.setEndValue(1.0)
-        self._opacity_anim.setEasingCurve(QEasingCurve.OutCubic)
+        self._opacity_anim.setEasingCurve(EASE_ENTER)
         self._opacity_anim.start()
 
         if dx or dy:
             self._slide_anim.setDuration(duration)
+            self._slide_anim.setStartDelay(delay)
             self._slide_anim.setStartValue(start)
             self._slide_anim.setEndValue(self._rest_pos)
-            self._slide_anim.setEasingCurve(QEasingCurve.OutCubic)
+            self._slide_anim.setEasingCurve(EASE_ENTER)
             self._slide_anim.start()
         # dx/dy 为 0 时无需碰 slide_anim：上面已保证它不在运行，
         # 且它的 finished 会去摘 effect，不能在这里多余地 stop()

@@ -204,8 +204,8 @@ class SettingsView(QWidget):
         box = self._group(
             layout,
             "资料位置",
-            "资料根目录应含有 写作 / 听力 / 阅读 / 单词 等子文件夹。"
-            "移动资料后在这里重新指定即可，不必改动程序。",
+            "自动递归扫描目录下的课件与图片（支持多层子目录，自动按目录/文件名推断 写作 / 听力 / 阅读 / 单词 / 其他）。"
+            "切换或移动资料目录后在这里重新指定即可。",
         )
 
         self.input_root = QLineEdit()
@@ -474,11 +474,11 @@ class SettingsView(QWidget):
         row.setSpacing(10)
         self.btn_export = QPushButton("导出备份")
         self.btn_export.setObjectName("iconButton")
-        self.btn_export.setIcon(icon("download"))
+        self.btn_export.setIcon(icon("upload"))
         self.btn_export.clicked.connect(self.export_backup)
         self.btn_import = QPushButton("导入备份")
         self.btn_import.setObjectName("iconButton")
-        self.btn_import.setIcon(icon("upload"))
+        self.btn_import.setIcon(icon("download"))
         self.btn_import.clicked.connect(self.import_backup)
         self.btn_open_dir = QPushButton("打开数据目录")
         self.btn_open_dir.setObjectName("iconButton")
@@ -488,17 +488,11 @@ class SettingsView(QWidget):
         self.btn_backup_now.setObjectName("iconButton")
         self.btn_backup_now.setIcon(icon("clipboard"))
         self.btn_backup_now.clicked.connect(self.backup_now)
-        self.btn_export_anki = QPushButton("Anki 导出")
-        self.btn_export_anki.setObjectName("iconButton")
-        self.btn_export_anki.setIcon(icon("download"))
-        self.btn_export_anki.setToolTip("导出待专攻单词（模糊与不认识）为 Anki 牌组 (TSV/CSV)")
-        self.btn_export_anki.clicked.connect(self.export_anki)
         for button in (
             self.btn_export,
             self.btn_import,
             self.btn_open_dir,
             self.btn_backup_now,
-            self.btn_export_anki,
         ):
             row.addWidget(button)
         row.addStretch()
@@ -691,36 +685,3 @@ class SettingsView(QWidget):
         destination = self.database.backup_now()
         self._refresh_usage()
         show_toast(self.window(), f"已备份：{destination.name}")
-
-    def export_anki(self):
-        count = self.database.count_anki_export_words()
-        if count == 0:
-            self.banner.show_message("warning", "当前没有待专攻的单词（状态为模糊或不认识）。")
-            return
-
-        default_name = f"topik-anki-待专攻-{date.today().isoformat()}.tsv"
-        root = self.database.get_material_root()
-        start_dir = (
-            os.path.join(root, "单词")
-            if (root and os.path.isdir(os.path.join(root, "单词")))
-            else str(DATA_DIR)
-        )
-        default_path = os.path.join(start_dir, default_name)
-
-        path, _ = QFileDialog.getSaveFileName(
-            self,
-            "导出 Anki 牌组",
-            default_path,
-            "Anki TSV 牌组 (*.tsv);;Anki CSV 牌组 (*.csv);;文本文件 (*.txt);;所有文件 (*)",
-        )
-        if not path:
-            return
-
-        try:
-            exported = self.database.export_anki_file(path)
-        except OSError as error:
-            self.banner.show_message("danger", f"导出失败，无法写入文件：{error}")
-            return
-
-        self.banner.clear()
-        show_toast(self.window(), f"已导出 {exported} 个待专攻单词至 Anki 牌组")

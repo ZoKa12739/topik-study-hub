@@ -55,7 +55,7 @@ from PySide6.QtWidgets import (
     QWidget,
 )
 
-from core.config import SNIPPETS_DIR, SUBJECT_FOLDERS, normalize_path
+from core.config import MATERIAL_SUBJECTS, SNIPPETS_DIR, normalize_path
 from core.snippets import (
     COLLECTED_SOURCE,
     IMAGE_EXTS,
@@ -237,7 +237,7 @@ class SnippetsView(QWidget):
         self.btn_paste.clicked.connect(self.paste_image)
         bar.addWidget(self.btn_paste)
 
-        self.btn_import = QPushButton(icon("upload"), "导入图片")
+        self.btn_import = QPushButton(icon("download"), "导入图片")
         self.btn_import.clicked.connect(self.import_images)
         bar.addWidget(self.btn_import)
 
@@ -438,10 +438,9 @@ class SnippetsView(QWidget):
 
         existing = {row["path"]: row for row in self.database.list_snippets()}
         records = collect_records(self.database.library_snapshot(), existing)
-        # 只有真的登记了新行才重读一遍：一次刷新里绝大多数情况是"什么都没变"，
-        # 那时 `existing` 就是最新的，不必再查一次库
-        added = self.database.register_snippets(records)
-        self._rows = self.database.list_snippets() if added else list(existing.values())
+        # 只要登记了新行或更新了已有行的 missing / source_subject，就重新读库拿最新状态
+        self.database.register_snippets(records)
+        self._rows = self.database.list_snippets() if records else list(existing.values())
 
         self._update_index_banner()
         self.reload()
@@ -472,8 +471,8 @@ class SnippetsView(QWidget):
         """来源下拉按**实际出现的**来源建，不写死四科——收藏目录里可能一张图都没有，
         而某个科目也可能一张截图都没有，列一个永远筛不出东西的选项只会让人怀疑工具。"""
         current = self.combo_source.currentData() if self.combo_source.count() else None
-        present = {row["source_subject"] or "" for row in self._rows}
-        order = [COLLECTED_SOURCE, *SUBJECT_FOLDERS]
+        present = {row["source_subject"] or "" for row in self._rows if not row["missing"]}
+        order = [COLLECTED_SOURCE, *MATERIAL_SUBJECTS]
         self.combo_source.blockSignals(True)
         self.combo_source.clear()
         self.combo_source.addItem("全部来源", None)

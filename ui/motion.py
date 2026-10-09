@@ -33,6 +33,11 @@ DUR_TOAST_IN = 140
 DUR_TOAST_OUT = 200
 
 # ---- 错峰延迟（ms）：制造"依次落位"的层次，而不是整块一起蹦 ----
+# Qt 没有 per-animation 的 startDelay（`QAbstractAnimation` 只有 `pause` /
+# `setPaused`，语义是"暂停"）。2026-10-09 试过用 `QEasingCurve.setCustomType`
+# 造一条"前段平坦"的曲线来模拟延迟，结果动画 tick 里回调 Python 闭包，
+# **直接把进程打崩（访问冲突）**。现在延迟由 `components.LabelMotion` 的
+# 单次定时器实现，曲线一律用内置 `EASE_ENTER`，不再有 Python 回调进动画框架。
 DELAY_WORD = 20
 DELAY_MEANING = 50
 
@@ -45,3 +50,4 @@ DY_REVEAL = 8     # 揭示时释义的上移量（向上为负）
 # ---- 曲线 ----
 EASE_ENTER = QEasingCurve.OutCubic  # 快进慢停：像落位
 EASE_EXIT = QEasingCurve.InCubic    # 加速离场，不拖尾
+

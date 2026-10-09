@@ -37,13 +37,7 @@ from PySide6.QtWidgets import (
 )
 
 from ui.icons import icon
-from ui.motion import (
-    DUR_BASE,
-    DUR_TOAST_IN,
-    DUR_TOAST_OUT,
-    EASE_ENTER,
-    EASE_EXIT,
-)
+from ui.motion import DUR_BASE, DUR_TOAST_IN, DUR_TOAST_OUT, EASE_ENTER, EASE_EXIT
 from ui.style import restyle
 from ui.theme import (
     ACCENT,
@@ -335,21 +329,36 @@ class LabelMotion:
     * **动画对象随宿主 View 存活**：`owner` 传入 View，effect 与 animation 都不被 GC。
     * **连发打断先归位**：从上一轮的静止点重开，坐标不累积。历史上
       `VocabView._animate_card_step` 动的是整张卡，连按 `1`/`2`/`3` 时
-      「归位 → 瞬移 → 再滑」，那正是"跳脱"感的来源；现在高频判断已改零动效
-      （`PRODUCT_SPEC` 流程 B：无动画、无确认、无停顿），动效只留给
-      Space 揭示与 Ctrl+Z 回退这类低频、用户主动 paced 的动作。
+      「归位 → 瞬移 → 再滑」，那正是"跳脱"感的来源；现在高频判断改为
+      分层错峰编排（`VocabView._play_entrance`），本类只负责单个叶子的
+      淡入落位，参数见 `ui/motion.py`。
+    * **先配动画，后动控件**：`play()` 里所有 `setDuration` / `setEasingCurve`
+      都发生在把标签挪位、挂 effect、归零透明度**之前**。反过来写（先污染
+      再配置）一旦配置抛异常，标签就带着 opacity 0 的 effect 卡死，
+      整行文字永久消失——2026-10-09 的"过词不显示释义"正是这么来的。
     """
 
     def __init__(self, owner, label):
         self._label = label
         self._rest_pos = QPoint()
-        # effect 由 label 持作父对象保证不被 GC，但构造时不安装——见 _release_effect
+        self._slide = False
+        # effect 与 label 同生命周期，但**每轮动画都可能换一个新的**：
+        # Qt 的所有权语义里 `setGraphicsEffect(None)` 会把 effect 对象删掉，
+        # 所以 _release_effect 摘掉之后引用必须置空，复用会撞
+        # "Internal C++ object already deleted"。
         self._effect = QGraphicsOpacityEffect(label)
         self._opacity_anim = QPropertyAnimation(self._effect, b"opacity", owner)
         self._slide_anim = QPropertyAnimation(label, b"pos", owner)
         # stop() 同样会发 finished，所以「被打断」与「自然播完」两条路径都覆盖
         self._opacity_anim.finished.connect(self._release_effect)
         self._slide_anim.finished.connect(self._release_effect)
+        # 错峰延迟：Qt 没有 per-animation 的 startDelay（QAbstractAnimation
+        # 只有 pause/setPaused，语义是"暂停"）。用单次定时器，别用自定义曲线
+        # 模拟——后者让 C++ 动画 tick 回调 Python 闭包，直接把进程打崩过。
+        # 定时器到点失效也无害：_launch 启动的永远是最近一次 play() 配好的动画。
+        self._delay_timer = QTimer(owner)
+        self._delay_timer.setSingleShot(True)
+        self._delay_timer.timeout.connect(self._launch)
 
     def _release_effect(self, *_):
         """两组动画都停下后摘掉 effect，让静止文字回到原生渲染。"""
@@ -357,8 +366,12 @@ class LabelMotion:
             self._opacity_anim.state() != QPropertyAnimation.Running
             and self._slide_anim.state() != QPropertyAnimation.Running
         ):
-            self._effect.setOpacity(1.0)
-            self._label.setGraphicsEffect(None)
+            if self._effect is not None:
+                self._effect.setOpacity(1.0)
+                self._label.setGraphicsEffect(None)  # Qt 会顺手删掉这个 effect
+                self._effect = None
+                # 目标对象已被删，先把动画与它摘开，防止后续 stop() 摸到野指针
+                self._opacity_anim.setTargetObject(None)
 
     def play(self, dx=0, dy=0, duration=DUR_BASE, delay=0):
         """从 `(dx, dy)` 偏移处淡入到静止位；`dx`/`dy` 为 0 时只做淡入。
@@ -382,27 +395,43 @@ class LabelMotion:
             self._rest_pos = label.pos()
 
         start = QPoint(self._rest_pos.x() + dx, self._rest_pos.y() + dy)
-        label.move(start)
-        # 这一刻才挂 effect：摘挂之间没有重绘，不会闪
-        label.setGraphicsEffect(self._effect)
-        self._effect.setOpacity(0.0)
+        self._slide = bool(dx or dy)
 
+        # 先把两个动画配好，最后才动控件本身。配置阶段若出意外（拼错 API、
+        # 类型不对），标签还是好好的——不能重蹈"opacity 已归零才崩"的覆辙，
+        # 那会把标签永久卡在不可见状态（2026-10-09 的释义不显示事故）。
         self._opacity_anim.setDuration(duration)
-        self._opacity_anim.setStartDelay(delay)
         self._opacity_anim.setStartValue(0.0)
         self._opacity_anim.setEndValue(1.0)
         self._opacity_anim.setEasingCurve(EASE_ENTER)
-        self._opacity_anim.start()
-
-        if dx or dy:
+        if self._slide:
             self._slide_anim.setDuration(duration)
-            self._slide_anim.setStartDelay(delay)
             self._slide_anim.setStartValue(start)
             self._slide_anim.setEndValue(self._rest_pos)
             self._slide_anim.setEasingCurve(EASE_ENTER)
+
+        label.move(start)
+        # 此刻才装 effect：上一轮摘掉时 Qt 已把它删除，需要新建一个。
+        # 摘与装之间没有重绘，不会闪。
+        if self._effect is None:
+            self._effect = QGraphicsOpacityEffect(label)
+            self._opacity_anim.setTargetObject(self._effect)
+        label.setGraphicsEffect(self._effect)
+        self._effect.setOpacity(0.0)
+
+        self._delay_timer.stop()
+        if delay > 0:
+            self._delay_timer.start(delay)
+        else:
+            self._launch()
+
+    def _launch(self):
+        """延迟到点（或无延迟）后真正启动两个动画。"""
+        self._opacity_anim.start()
+        if self._slide:
             self._slide_anim.start()
-        # dx/dy 为 0 时无需碰 slide_anim：上面已保证它不在运行，
-        # 且它的 finished 会去摘 effect，不能在这里多余地 stop()
+        # 无位移时不碰 slide_anim：上面已保证它不在运行，且它的 finished
+        # 会去摘 effect，不能多余地 stop()
 
 
 def make_copyable(label):

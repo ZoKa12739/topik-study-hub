@@ -151,9 +151,9 @@ class OnboardingDialog(QDialog):
         title.setObjectName("sectionTitle")
         box.addWidget(title)
         hint = QLabel(
-            "资料根目录应当含有 "
+            "工具会自动递归扫描该目录下的课件与图片，并按目录/文件名智能归类到 "
             + " / ".join(SUBJECT_FOLDERS)
-            + " 等子文件夹。资料库与知识碎片页会从这里扫描内容。"
+            + " / 其他。"
         )
         hint.setObjectName("muted")
         hint.setWordWrap(True)

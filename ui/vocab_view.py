@@ -38,7 +38,7 @@
 import os
 from pathlib import Path
 
-from PySide6.QtCore import QEasingCurve, QEvent, QPoint, QPropertyAnimation, QSize, QTimer, Qt, Signal
+from PySide6.QtCore import QEvent, QPoint, QSize, QTimer, Qt, Signal
 from PySide6.QtGui import QColor, QFont, QKeySequence, QShortcut
 from PySide6.QtWidgets import (
     QApplication,
@@ -63,8 +63,8 @@ from PySide6.QtWidgets import (
     QWidget,
 )
 
-from core.tts import WordSpeaker
-from ui.components import Banner, EmptyState, make_copyable, show_toast
+from core.tts import BatchTTSPreloadWorker, WordSpeaker, count_uncached_words
+from ui.components import Banner, EmptyState, LabelMotion, make_copyable, show_toast
 from ui.icons import icon
 from ui.style import restyle
 from ui.theme import (
@@ -350,7 +350,6 @@ class VocabView(QWidget):
         self._drill_cleared = 0
         self._drill_round_counted = False
         self._summary_action = None
-        self._card_anim = None
 
         self._pending_editor = None
         self._pending_hint = None
@@ -361,6 +360,9 @@ class VocabView(QWidget):
 
         self.speaker = WordSpeaker(self.database, self)
         self.speaker.notice.connect(self._on_speaker_notice)
+
+        self._batch_tts_worker = None
+        self._batch_list_id = None
 
         self.init_ui()
         self.refresh_lists()
@@ -551,6 +553,16 @@ class VocabView(QWidget):
         self.lbl_meta.setObjectName("muted")
         meta_row.addWidget(self.lbl_meta)
         meta_row.addStretch()
+
+        self.btn_batch_tts = QPushButton("缓存发音")
+        self.btn_batch_tts.setObjectName("iconButton")
+        self.btn_batch_tts.setIcon(icon("download"))
+        self.btn_batch_tts.setCursor(Qt.PointingHandCursor)
+        self.btn_batch_tts.setToolTip("预先下载本表全部未缓存的发音音频，以便完全离线使用")
+        self.btn_batch_tts.clicked.connect(self._toggle_batch_tts_from_button)
+        self.btn_batch_tts.setVisible(False)
+        meta_row.addWidget(self.btn_batch_tts)
+
         box.addWidget(meta_bar)
 
         splitter = QSplitter(Qt.Horizontal)
@@ -686,7 +698,6 @@ class VocabView(QWidget):
         card.setMinimumWidth(640)
         card.setMaximumWidth(760)
         card.setMinimumHeight(440)
-        self.pass_card = card
 
         box = QVBoxLayout(card)
         box.setContentsMargins(28, 22, 28, 22)
@@ -705,22 +716,37 @@ class VocabView(QWidget):
 
         box.addStretch(1)
 
+        # 中部定高容器：词长、释义长短、揭示前后的字号差都会改变这一块的自然高度，
+        # 若直接排在上下两条 stretch 之间，变化会被平摊到两侧、按钮行跟着上下漂移
+        # （用户反馈的"跳"）。定高并内部居中后，这块高度恒定，按钮行永不漂移。
+        # 150px 覆盖「42px 词 + 两行释义」的极端情况；超出（罕见的长释义折三行）
+        # 才允许容器继续长高。
+        middle = QWidget()
+        middle.setMinimumHeight(150)
+        middle_box = QVBoxLayout(middle)
+        middle_box.setContentsMargins(0, 0, 0, 0)
+        middle_box.setSpacing(12)
+        middle_box.addStretch(1)
+
         self.lbl_pass_seq = QLabel("")
         self.lbl_pass_seq.setObjectName("quizSeq")
         self.lbl_pass_seq.setAlignment(Qt.AlignCenter)
-        box.addWidget(self.lbl_pass_seq)
+        middle_box.addWidget(self.lbl_pass_seq)
 
         self.lbl_pass_kr = QLabel("")
         self.lbl_pass_kr.setObjectName("quizWord")
         self.lbl_pass_kr.setAlignment(Qt.AlignCenter)
         self.lbl_pass_kr.setWordWrap(True)
-        box.addWidget(make_copyable(self.lbl_pass_kr))
+        middle_box.addWidget(make_copyable(self.lbl_pass_kr))
 
         self.lbl_pass_cn = QLabel("")
         self.lbl_pass_cn.setObjectName("quizMeaning")
         self.lbl_pass_cn.setAlignment(Qt.AlignCenter)
         self.lbl_pass_cn.setWordWrap(True)
-        box.addWidget(make_copyable(self.lbl_pass_cn))
+        middle_box.addWidget(make_copyable(self.lbl_pass_cn))
+
+        middle_box.addStretch(1)
+        box.addWidget(middle)
 
         box.addStretch(1)
 
@@ -765,6 +791,10 @@ class VocabView(QWidget):
         self.lbl_pass_hint.setAlignment(Qt.AlignCenter)
         box.addWidget(self.lbl_pass_hint)
 
+        # 动效对象（绑定在本 View 上防 GC）：只服务揭示与回退，不服务判断
+        self._meaning_motion = LabelMotion(self, self.lbl_pass_cn)
+        self._word_motion = LabelMotion(self, self.lbl_pass_kr)
+
         page_layout.addWidget(card)
         return page
 
@@ -786,7 +816,6 @@ class VocabView(QWidget):
         card.setMinimumWidth(640)
         card.setMaximumWidth(760)
         card.setMinimumHeight(440)
-        self.drill_card = card
         box = QVBoxLayout(card)
         box.setContentsMargins(28, 22, 28, 22)
         box.setSpacing(10)
@@ -807,22 +836,34 @@ class VocabView(QWidget):
 
         box.addStretch(1)
 
+        # 与过词卡同一套定高容器：专攻切词时释义可能从一行变两行，
+        # 不定高就会把下方笔记区和按钮行一起顶下去。
+        middle = QWidget()
+        middle.setMinimumHeight(150)
+        middle_box = QVBoxLayout(middle)
+        middle_box.setContentsMargins(0, 0, 0, 0)
+        middle_box.setSpacing(12)
+        middle_box.addStretch(1)
+
         self.lbl_drill_seq = QLabel("")
         self.lbl_drill_seq.setObjectName("quizSeq")
         self.lbl_drill_seq.setAlignment(Qt.AlignCenter)
-        box.addWidget(self.lbl_drill_seq)
+        middle_box.addWidget(self.lbl_drill_seq)
 
         self.lbl_drill_kr = QLabel("")
         self.lbl_drill_kr.setObjectName("quizWord")
         self.lbl_drill_kr.setAlignment(Qt.AlignCenter)
         self.lbl_drill_kr.setWordWrap(True)
-        box.addWidget(make_copyable(self.lbl_drill_kr))
+        middle_box.addWidget(make_copyable(self.lbl_drill_kr))
 
         self.lbl_drill_cn = QLabel("")
         self.lbl_drill_cn.setObjectName("quizMeaning")
         self.lbl_drill_cn.setAlignment(Qt.AlignCenter)
         self.lbl_drill_cn.setWordWrap(True)
-        box.addWidget(make_copyable(self.lbl_drill_cn))
+        middle_box.addWidget(make_copyable(self.lbl_drill_cn))
+
+        middle_box.addStretch(1)
+        box.addWidget(middle)
 
         # 专攻笔记输入区：恢复原先样式（直接放置 QTextEdit，无外框包装与标题）
         self.txt_drill_notes = QTextEdit()
@@ -873,6 +914,9 @@ class VocabView(QWidget):
         self.lbl_drill_hint.setObjectName("vocabCardHint")
         self.lbl_drill_hint.setAlignment(Qt.AlignCenter)
         box.addWidget(self.lbl_drill_hint)
+
+        # 与过词卡对称：回退时只让大字滑入，卡片本身不动
+        self._drill_word_motion = LabelMotion(self, self.lbl_drill_kr)
 
         card_wrapper = QWidget()
         card_w_layout = QVBoxLayout(card_wrapper)
@@ -1074,6 +1118,8 @@ class VocabView(QWidget):
             self._pass_begin()
         else:
             self._drill_begin()
+
+        self._check_and_prompt_tts_cache(list_id)
 
     def set_mode(self, mode):
         """切换浏览 / 过词 / 专攻。"""
@@ -1433,12 +1479,178 @@ class VocabView(QWidget):
                 f"全部词表 · 共 {len(self._browse_rows)} 个词条"
                 "（同一个韩文词在多份词表里共享笔记与状态）"
             )
+            if hasattr(self, "btn_batch_tts"):
+                self.btn_batch_tts.setVisible(False)
             return
         counts = self.database.list_counts(list_id)
         self.lbl_meta.setText(
             f"{self.current_list_name()} · {counts['total']} 个词 · "
             f"已过 {counts['passed']} · 待专攻 {counts['to_drill']}"
         )
+        if hasattr(self, "btn_batch_tts"):
+            self._sync_batch_tts_button(list_id)
+
+    def _toggle_batch_tts_from_button(self):
+        list_id = self.current_list_id()
+        if list_id is None:
+            return
+        if self._batch_tts_worker and self._batch_tts_worker.isRunning():
+            self._cancel_batch_tts_preload()
+        else:
+            self._start_batch_tts_preload(list_id)
+
+    def _sync_batch_tts_button(self, list_id):
+        if not hasattr(self, "btn_batch_tts"):
+            return
+        if list_id is None:
+            self.btn_batch_tts.setVisible(False)
+            return
+
+        self.btn_batch_tts.setVisible(True)
+        if (
+            self._batch_tts_worker is not None
+            and self._batch_tts_worker.isRunning()
+            and self._batch_list_id == list_id
+        ):
+            return
+
+        words_data = self.database.list_words(list_id)
+        raw_words = [row["korean"] for row in words_data]
+        voice = self.database.get_tts_voice()
+        uncached = count_uncached_words(raw_words, voice)
+        if uncached == 0:
+            self.btn_batch_tts.setText("发音已全缓存")
+            self.btn_batch_tts.setEnabled(False)
+            self.btn_batch_tts.setIcon(icon("check-circle", STATE_COLORS["success"]))
+        else:
+            self.btn_batch_tts.setText(f"缓存发音 ({uncached} 词未存)")
+            self.btn_batch_tts.setEnabled(True)
+            self.btn_batch_tts.setIcon(icon("download"))
+
+    def _check_and_prompt_tts_cache(self, list_id):
+        """切换词表时：如当前词表有未缓存单词，自动弹条提示一键触发预缓存。"""
+        if list_id is None:
+            return
+        if self._batch_tts_worker is not None and self._batch_tts_worker.isRunning():
+            if self._batch_list_id != list_id:
+                self._cancel_batch_tts_preload()
+            else:
+                return
+
+        words_data = self.database.list_words(list_id)
+        if not words_data:
+            return
+        raw_words = [row["korean"] for row in words_data]
+        voice = self.database.get_tts_voice()
+        uncached = count_uncached_words(raw_words, voice)
+        if uncached > 0:
+            list_name = self.current_list_name()
+            self.banner.show_message(
+                "info",
+                f"《{list_name}》尚有 {uncached} 个单词未缓存发音，是否提前自动转换？",
+                action_text="立即下载发音",
+                action_icon="download",
+            )
+            self._banner_action = lambda: self._start_batch_tts_preload(list_id)
+
+    def _start_batch_tts_preload(self, list_id):
+        if list_id is None:
+            return
+        self._cancel_batch_tts_preload()
+
+        words_data = self.database.list_words(list_id)
+        if not words_data:
+            return
+        raw_words = [row["korean"] for row in words_data]
+        voice = self.database.get_tts_voice()
+        azure_key = self.database.get_azure_speech_key()
+        azure_region = self.database.get_azure_speech_region()
+        list_name = self.current_list_name()
+
+        worker = BatchTTSPreloadWorker(
+            raw_words,
+            voice=voice,
+            azure_key=azure_key,
+            azure_region=azure_region,
+            parent=self,
+        )
+        self._batch_tts_worker = worker
+        self._batch_list_id = list_id
+
+        worker.progress.connect(
+            lambda done, total, word: self._on_batch_tts_progress(done, total, word, list_name)
+        )
+        worker.finished.connect(
+            lambda downloaded, total: self._on_batch_tts_finished(downloaded, total, list_name)
+        )
+        worker.error.connect(
+            lambda err: self._on_batch_tts_error(err, list_name)
+        )
+
+        self.banner.show_message(
+            "info",
+            f"正在预下载《{list_name}》发音：准备中…",
+            action_text="停止",
+            action_icon="x",
+        )
+        self._banner_action = self._cancel_batch_tts_preload
+        if hasattr(self, "btn_batch_tts"):
+            self.btn_batch_tts.setText("下载中…")
+            self.btn_batch_tts.setEnabled(True)
+
+        worker.start()
+
+    def _on_batch_tts_progress(self, done, total, word, list_name):
+        if total <= 0:
+            return
+        pct = int(done * 100 / total)
+        self.banner.show_message(
+            "info",
+            f"正在预下载《{list_name}》发音：{done}/{total}（{pct}%）· {word}…",
+            action_text="停止",
+            action_icon="x",
+        )
+        self._banner_action = self._cancel_batch_tts_preload
+        if hasattr(self, "btn_batch_tts"):
+            self.btn_batch_tts.setText(f"下载中 {done}/{total}")
+
+    def _on_batch_tts_finished(self, downloaded, total, list_name):
+        self._batch_tts_worker = None
+        self._batch_list_id = None
+        self.banner.show_message(
+            "success",
+            f"《{list_name}》发音预下载完成（新增缓存 {downloaded} 词，共 {total} 词），离线可流畅秒播。",
+        )
+        self._banner_action = None
+        show_toast(self.window(), f"《{list_name}》发音已全部就绪", level="success")
+        list_id = self.current_list_id()
+        if list_id:
+            self._sync_batch_tts_button(list_id)
+
+    def _on_batch_tts_error(self, err, list_name):
+        self._batch_tts_worker = None
+        self._batch_list_id = None
+        self.banner.show_message(
+            "warning",
+            f"预下载《{list_name}》发音中断：{err}",
+            action_text="重试",
+            action_icon="refresh",
+        )
+        list_id = self.current_list_id()
+        self._banner_action = lambda: self._start_batch_tts_preload(list_id)
+        if list_id:
+            self._sync_batch_tts_button(list_id)
+
+    def _cancel_batch_tts_preload(self):
+        if self._batch_tts_worker is not None and self._batch_tts_worker.isRunning():
+            self._batch_tts_worker.cancel()
+            self._batch_tts_worker.wait(1500)
+        self._batch_tts_worker = None
+        self._batch_list_id = None
+        self.banner.clear()
+        list_id = self.current_list_id()
+        if list_id:
+            self._sync_batch_tts_button(list_id)
 
     def _show_browse_empty(self, list_id):
         if list_id is None:
@@ -1668,33 +1880,10 @@ class VocabView(QWidget):
             return
         self._revealed = not self._revealed
         self._render_pass_meaning()
-
-    def _animate_card_step(self, card: QWidget, direction: int = 1):
-        """卡片切换微动效：direction=1 向前切换，direction=-1 撤销回退。"""
-        if not self.isVisible() or card is None or not card.isVisible():
-            return
-
-        # 高频连按即时打断并归位到上一轮终点，防止卡顿和坐标累积偏移
-        if getattr(self, "_card_anim", None) is not None:
-            if self._card_anim.state() == QPropertyAnimation.Running:
-                prev_target = self._card_anim.targetObject()
-                end_val = self._card_anim.endValue()
-                self._card_anim.stop()
-                if isinstance(prev_target, QWidget) and isinstance(end_val, QPoint):
-                    prev_target.move(end_val)
-
-        parent = card.parentWidget()
-        if parent is not None and parent.layout() is not None:
-            parent.layout().activate()
-        target_pos = card.pos()
-        start_pos = QPoint(target_pos.x() + (14 * direction), target_pos.y())
-
-        self._card_anim = QPropertyAnimation(card, b"pos", self)
-        self._card_anim.setDuration(150)
-        self._card_anim.setStartValue(start_pos)
-        self._card_anim.setEndValue(target_pos)
-        self._card_anim.setEasingCurve(QEasingCurve.OutCubic)
-        self._card_anim.start()
+        if self._revealed:
+            # 揭示是这张卡上唯一"值得有反馈"的动作：释义淡入并轻升 4px。
+            # 判断（1/2/3）走零动效——PRODUCT_SPEC 流程 B：无动画、无确认、无停顿。
+            self._meaning_motion.play(dy=-4, duration=110)
 
     def _judge(self, state):
         """`1`/`2`/`3` 与三个按钮的共同入口。"""
@@ -1729,7 +1918,8 @@ class VocabView(QWidget):
         self._show_pass_current()
         if hasattr(self, "btn_pass_undo"):
             self.btn_pass_undo.setEnabled(bool(self._undo_stack))
-        self._animate_card_step(self.pass_card, direction=1)
+        # 判断动作零动效（PRODUCT_SPEC 流程 B：无动画、无确认、无停顿）：
+        # 这一遍要能几分钟过完几百个词，任何位移/淡入都会变成连按时的卡顿源。
 
     def _undo_pass(self):
         """`Ctrl+Z` 退回上一个词（流程 B 第 7 条）：状态与断点一起还原。"""
@@ -1748,7 +1938,9 @@ class VocabView(QWidget):
         self._show_pass_current()
         if hasattr(self, "btn_pass_undo"):
             self.btn_pass_undo.setEnabled(bool(self._undo_stack))
-        self._animate_card_step(self.pass_card, direction=-1)
+        # 回退是低频纠正动作，用方向性动效确认"真的退回去了"：
+        # 只滑大字（24px 对侧滑入 + 淡入），不动整张卡。
+        self._word_motion.play(dx=-24, duration=160)
 
     def _update_pass_progress(self):
         """`已过 320 / 1400 · 已标记 87`。
@@ -1832,8 +2024,7 @@ class VocabView(QWidget):
         self._drill_index += 1
         self._show_drill_current()
         self._sync_drill_undo_button()
-        if self._drill_index < len(self._drill_rows):
-            self._animate_card_step(self.drill_card, direction=1)
+        # 专攻判断同样零动效：切词要跟手（同过词，见 `_pass_judge` 注释）
 
     def _undo_drill(self):
         """回退上一个专攻的词 (Ctrl+Z 或 点击回退按钮)。"""
@@ -1858,7 +2049,8 @@ class VocabView(QWidget):
             self.drill_stack.setCurrentIndex(0)
         self._show_drill_current()
         self._sync_drill_undo_button()
-        self._animate_card_step(self.drill_card, direction=-1)
+        # 与过词回退对称：只滑大字，卡片不动
+        self._drill_word_motion.play(dx=-24, duration=160)
 
     def _sync_drill_undo_button(self):
         if hasattr(self, "btn_drill_undo"):
@@ -1952,6 +2144,7 @@ class VocabView(QWidget):
 
     def shutdown(self):
         """关窗口时停止播放并等待后台发音线程结束。"""
+        self._cancel_batch_tts_preload()
         self.speaker.shutdown()
 
     def showEvent(self, event):

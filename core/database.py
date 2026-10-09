@@ -27,9 +27,6 @@
 迁移时把旧的复合键收敛为 `korean`（当前数据 49 条 korean 互不重复，无碰撞）。
 """
 
-import csv
-import html
-import io
 import json
 import os
 import sqlite3
@@ -41,6 +38,8 @@ from core.config import (
     BACKUP_DIR,
     DATABASE_PATH,
     DATA_DIR,
+    DEFAULT_AZURE_KEY,
+    DEFAULT_AZURE_REGION,
     DEFAULT_EXAM_DATE,
     DEFAULT_EXAM_LABEL,
     DEFAULT_TTS_MODE,
@@ -51,10 +50,12 @@ from core.config import (
     TTS_DIR,
     detect_material_root,
     dir_size,
+    is_under_root,
     normalize_path,
     path_key,
     subject_of,
 )
+from core.library import MATERIAL_EXTS
 
 # 词的三态（D14 方案 B）。未过词为 NULL，不在这张枚举里。
 WORD_STATES = ("known", "fuzzy", "unknown")  # 认识 / 模糊 / 不认识
@@ -317,6 +318,8 @@ class StudyDatabase:
             playlist_id INTEGER NOT NULL REFERENCES playlists(id) ON DELETE CASCADE,
             track_id INTEGER NOT NULL,
             sort_order INTEGER NOT NULL DEFAULT 0,
+            kr_page INTEGER,
+            cn_page INTEGER,
             PRIMARY KEY (playlist_id, track_id)
         );
 
@@ -394,6 +397,11 @@ class StudyDatabase:
         "playlists": {
             "kr_pdf": "TEXT",
             "cn_pdf": "TEXT",
+            "kr_page": "INTEGER",
+            "cn_page": "INTEGER",
+        },
+        # v9：playlist_items 补 kr_page / cn_page——每首曲目在列表中绑定原文与解析起始页
+        "playlist_items": {
             "kr_page": "INTEGER",
             "cn_page": "INTEGER",
         },
@@ -715,7 +723,42 @@ class StudyDatabase:
         return self.get_setting("material_root") or (detect_material_root() or "")
 
     def set_material_root(self, path):
-        self.set_setting("material_root", path or "")
+        old_root = self.get_setting("material_root")
+        new_root = normalize_path(path) if path else ""
+        self.set_setting("material_root", new_root)
+        if old_root and new_root and path_key(old_root) != path_key(new_root):
+            self._relocate_moved_root_paths(old_root, new_root)
+
+    def _relocate_moved_root_paths(self, old_root, new_root):
+        """若用户在磁盘上移动了整个资料目录再更新设置（原路径文件已不在、而新根下对应相对路径存在），
+        自动把索引、标签、阅读进度与知识碎片迁往新路径。"""
+        old_norm = normalize_path(old_root)
+        new_norm = normalize_path(new_root)
+        mat_rows = self.connection.execute("SELECT path FROM materials").fetchall()
+        for row in mat_rows:
+            old_p = row["path"]
+            if not is_under_root(old_p, old_norm) or os.path.exists(old_p):
+                continue
+            try:
+                rel = os.path.relpath(normalize_path(old_p), old_norm)
+            except ValueError:
+                continue
+            candidate = normalize_path(os.path.join(new_norm, rel))
+            if os.path.exists(candidate):
+                self.relocate_material(old_p, candidate)
+
+        snip_rows = self.connection.execute("SELECT path, title FROM snippets").fetchall()
+        for row in snip_rows:
+            old_p = row["path"]
+            if not is_under_root(old_p, old_norm) or os.path.exists(old_p):
+                continue
+            try:
+                rel = os.path.relpath(normalize_path(old_p), old_norm)
+            except ValueError:
+                continue
+            candidate = normalize_path(os.path.join(new_norm, rel))
+            if os.path.exists(candidate):
+                self.rename_snippet_file(old_p, candidate, row["title"])
 
     def get_recording_dir(self):
         """跟读录音存到哪。没配过就用 `data/recordings/`（P5 里可改）。
@@ -749,13 +792,47 @@ class StudyDatabase:
         self.set_setting("tts_mode", "local" if mode == "local" else "online")
 
     def get_tts_voice(self):
-        """联网 Google TTS 语速/音色选项（`google_ko` 标准 / `google_ko_slow` 慢速）。"""
+        """联网 TTS 语速/音色选项。"""
         voice = self.get_setting("tts_voice", DEFAULT_TTS_VOICE) or DEFAULT_TTS_VOICE
-        return voice if voice in ("google_ko", "google_ko_slow") else DEFAULT_TTS_VOICE
+        valid_voices = (
+            "azure_ko_dragon_hd",
+            "azure_ko_dragon_hd_slow",
+            "azure_ko_sunhi_standard",
+            "google_ko",
+            "google_ko_slow",
+        )
+        return voice if voice in valid_voices else DEFAULT_TTS_VOICE
 
     def set_tts_voice(self, voice):
-        valid = voice if voice in ("google_ko", "google_ko_slow") else DEFAULT_TTS_VOICE
+        valid_voices = (
+            "azure_ko_dragon_hd",
+            "azure_ko_dragon_hd_slow",
+            "azure_ko_sunhi_standard",
+            "google_ko",
+            "google_ko_slow",
+        )
+        valid = voice if voice in valid_voices else DEFAULT_TTS_VOICE
         self.set_setting("tts_voice", valid)
+
+    def get_azure_speech_key(self) -> str:
+        """获取 Azure Speech 密钥，优先读取环境变量，回退至本地 settings。"""
+        env_key = os.environ.get("AZURE_SPEECH_KEY", "").strip()
+        if env_key:
+            return env_key
+        return self.get_setting("azure_speech_key", DEFAULT_AZURE_KEY).strip()
+
+    def set_azure_speech_key(self, key: str):
+        self.set_setting("azure_speech_key", (key or "").strip())
+
+    def get_azure_speech_region(self) -> str:
+        """获取 Azure Speech 区域，优先读取环境变量，回退至本地 settings。"""
+        env_reg = os.environ.get("AZURE_SPEECH_REGION", "").strip()
+        if env_reg:
+            return env_reg
+        return self.get_setting("azure_speech_region", DEFAULT_AZURE_REGION).strip() or DEFAULT_AZURE_REGION
+
+    def set_azure_speech_region(self, region: str):
+        self.set_setting("azure_speech_region", (region or "").strip() or DEFAULT_AZURE_REGION)
 
     def get_tts_auto_play(self):
         """过词 / 专攻切换单词时是否自动发音。"""
@@ -945,6 +1022,90 @@ class StudyDatabase:
         with self.connection:
             self._apply_word_state(key, state)
 
+    def add_single_word(self, list_name: str, korean: str, meaning: str = "", note: str = "") -> dict:
+        """向指定词表（默认'跟读生词本'）追加单个生词。
+        
+        若词表不存在则自动创建；若生词已存在则更新其释义与笔记。
+        """
+        cleaned_kr = korean.strip()
+        cleaned_meaning = meaning.strip()
+        if not cleaned_kr:
+            raise ValueError("单词内容不能为空")
+
+        w_key = self.word_key(cleaned_kr)
+        with self.connection:
+            # 1. 查找或创建词表
+            row = self.connection.execute(
+                "SELECT id FROM word_lists WHERE name = ?", (list_name,)
+            ).fetchone()
+            if row:
+                list_id = row["id"]
+            else:
+                next_order = self.connection.execute(
+                    "SELECT COALESCE(MAX(sort_order), 0) + 1 FROM word_lists"
+                ).fetchone()[0]
+                cursor = self.connection.execute(
+                    "INSERT INTO word_lists (name, source_path, item_count, sort_order) VALUES (?, ?, ?, ?)",
+                    (list_name, "shadowing_collected", 0, next_order),
+                )
+                list_id = cursor.lastrowid
+                self.connection.execute(
+                    "INSERT OR IGNORE INTO word_list_progress (list_id) VALUES (?)", (list_id,)
+                )
+
+            # 2. 检查词表内是否已有此词
+            existing_word = self.connection.execute(
+                "SELECT id, seq FROM words WHERE list_id = ? AND word_key = ?",
+                (list_id, w_key),
+            ).fetchone()
+
+            if existing_word:
+                word_id = existing_word["id"]
+                if cleaned_meaning:
+                    self.connection.execute(
+                        "UPDATE words SET meaning = ? WHERE id = ?",
+                        (cleaned_meaning, word_id),
+                    )
+            else:
+                max_seq = self.connection.execute(
+                    "SELECT COALESCE(MAX(seq), 0) FROM words WHERE list_id = ?",
+                    (list_id,),
+                ).fetchone()[0]
+                cursor = self.connection.execute(
+                    "INSERT INTO words (list_id, seq, korean, meaning, word_key) VALUES (?, ?, ?, ?, ?)",
+                    (list_id, max_seq + 1, cleaned_kr, cleaned_meaning, w_key),
+                )
+                word_id = cursor.lastrowid
+                # 刷新词表条目数
+                self.connection.execute(
+                    "UPDATE word_lists SET item_count = (SELECT COUNT(*) FROM words WHERE list_id = ?) WHERE id = ?",
+                    (list_id, list_id),
+                )
+
+            # 3. 若有备注，写入第二层 word_notes
+            if note.strip():
+                # 保存时注意：不要覆盖已有星标/状态，使用 save_word_note 需要提供 is_starred
+                # 但更安全的做法是直接执行更新 note 的 SQL 以避免覆盖 is_starred 如果未提供。
+                # 按照 spec，若已有备注则可能是追加。
+                existing_note_row = self.connection.execute(
+                    "SELECT note FROM word_notes WHERE word_key = ?", (w_key,)
+                ).fetchone()
+                existing_note = existing_note_row["note"] if existing_note_row else ""
+                new_note = (existing_note + "\n" + note.strip()).strip() if existing_note else note.strip()
+                
+                self.connection.execute(
+                    """
+                    INSERT INTO word_notes (word_key, note, updated_at)
+                    VALUES (?, ?, CURRENT_TIMESTAMP)
+                    ON CONFLICT(word_key) DO UPDATE SET
+                        note=excluded.note,
+                        updated_at=CURRENT_TIMESTAMP
+                    """,
+                    (w_key, new_note),
+                )
+
+        return {"word_id": word_id, "list_id": list_id, "korean": cleaned_kr}
+
     def drill_queue(self, list_id=None):
         """待专攻队列：`state IN ('fuzzy','unknown')`，不认识的排在前面（D14）。
 
@@ -967,114 +1128,6 @@ class StudyDatabase:
             """,
             (list_id,),
         ).fetchall()
-
-    # ---------------------------------------------------------------- Anki 导出（第 7 期 · M2）
-
-    def get_anki_export_words(self, list_id=None):
-        """拉取待专攻词 (`state IN ('fuzzy','unknown')`) 供 Anki 导出。
-
-        不认识 (unknown) 排在前面，其次为模糊 (fuzzy)。
-        使用 LEFT JOIN 保留孤儿笔记词，并通过 GROUP BY 去重跨表同词。
-        """
-        if list_id is not None:
-            query = """
-                SELECT w.korean,
-                       COALESCE(w.meaning, '') AS meaning,
-                       n.state,
-                       COALESCE(n.note, '') AS note,
-                       COALESCE(wl.name, '') AS list_names
-                FROM words w
-                JOIN word_notes n ON n.word_key = w.word_key
-                LEFT JOIN word_lists wl ON wl.id = w.list_id
-                WHERE w.list_id = ? AND n.state IN ('fuzzy', 'unknown')
-                ORDER BY CASE n.state WHEN 'unknown' THEN 0 ELSE 1 END, w.seq, w.id
-            """
-            rows = self.connection.execute(query, (list_id,)).fetchall()
-        else:
-            query = """
-                SELECT n.word_key AS korean,
-                       COALESCE(MAX(w.meaning), '') AS meaning,
-                       n.state,
-                       COALESCE(n.note, '') AS note,
-                       COALESCE(GROUP_CONCAT(DISTINCT wl.name), '') AS list_names
-                FROM word_notes n
-                LEFT JOIN words w ON w.word_key = n.word_key
-                LEFT JOIN word_lists wl ON wl.id = w.list_id
-                WHERE n.state IN ('fuzzy', 'unknown')
-                GROUP BY n.word_key
-                ORDER BY CASE n.state WHEN 'unknown' THEN 0 ELSE 1 END, n.word_key
-            """
-            rows = self.connection.execute(query).fetchall()
-        return [dict(r) for r in rows]
-
-    def count_anki_export_words(self, list_id=None):
-        """统计待专攻词数量。"""
-        if list_id is not None:
-            row = self.connection.execute(
-                """
-                SELECT COUNT(DISTINCT w.word_key) AS n
-                FROM words w JOIN word_notes n ON n.word_key = w.word_key
-                WHERE w.list_id = ? AND n.state IN ('fuzzy', 'unknown')
-                """,
-                (list_id,),
-            ).fetchone()
-        else:
-            row = self.connection.execute(
-                "SELECT COUNT(*) AS n FROM word_notes WHERE state IN ('fuzzy', 'unknown')"
-            ).fetchone()
-        return row["n"] if row else 0
-
-    @staticmethod
-    def format_anki_export(words, delimiter="\t"):
-        """将词条列表格式化为 Anki 导入文本 (TSV/CSV)。"""
-        out = io.StringIO()
-        sep_name = "tab" if delimiter == "\t" else "Comma"
-        col_sep = "\t" if delimiter == "\t" else ","
-        out.write(f"#separator:{sep_name}\n#html:true\n#tags column:4\n")
-        out.write(f"#columns:韩语{col_sep}背面{col_sep}笔记{col_sep}标签\n")
-
-        writer = csv.writer(out, delimiter=delimiter, lineterminator="\n")
-        for r in words:
-            korean = (r.get("korean") or "").strip()
-            meaning = (r.get("meaning") or "").strip().replace("\r\n", "\n").replace("\r", "\n")
-            note = (r.get("note") or "").strip().replace("\r\n", "\n").replace("\r", "\n")
-            state = r.get("state", "")
-            list_names = r.get("list_names", "")
-
-            meaning_esc = html.escape(meaning).replace("\n", "<br>")
-            note_esc = html.escape(note).replace("\n", "<br>")
-
-            if meaning_esc and note_esc:
-                back = f'{meaning_esc}<br><br><small style="color:#666"><b>[笔记]</b> {note_esc}</small>'
-            elif meaning_esc:
-                back = meaning_esc
-            elif note_esc:
-                back = f'<small style="color:#666"><b>[笔记]</b> {note_esc}</small>'
-            else:
-                back = '<small style="color:#999">（暂无释义）</small>'
-
-            state_tag = "待专攻::不认识" if state == "unknown" else "待专攻::模糊"
-            tags = ["TOPIK", "待专攻", state_tag]
-            if list_names:
-                for name in list_names.split(","):
-                    clean = name.strip().replace(" ", "_")
-                    if clean and clean not in tags:
-                        tags.append(clean)
-            tag_str = " ".join(tags)
-
-            writer.writerow([korean, back, note, tag_str])
-        return out.getvalue()
-
-    def export_anki_file(self, path, list_id=None, delimiter=None):
-        """执行导出写入文件。返回导出的词数。"""
-        words = self.get_anki_export_words(list_id=list_id)
-        if delimiter is None:
-            delimiter = "," if str(path).lower().endswith(".csv") else "\t"
-        content = self.format_anki_export(words, delimiter=delimiter)
-        target = Path(path)
-        target.parent.mkdir(parents=True, exist_ok=True)
-        target.write_text(content, encoding="utf-8-sig")
-        return len(words)
 
     # ==================================================================
     # 词表：导入、浏览、过词进度（第 3 期 · P1）
@@ -1683,16 +1736,19 @@ class StudyDatabase:
     }
 
     def library_snapshot(self):
-        """列表页的**唯一数据来源**：索引行 + 三张第二层表，按 path 合并。
+        """列表页的**唯一数据来源**：当前资料根目录下的索引行 + 三张第二层表，按 path 合并。
 
         一次取全量再在内存里筛选/排序，而不是每敲一个字就去查一次库：资料条目数
         在千级，一次全量读（四条 SELECT）比"每次过滤一条带子查询的 SQL"更快也更好读。
         """
+        root = self.get_material_root()
         items = [
             dict(row)
             for row in self.connection.execute(
                 "SELECT id, path, name, subject, ext, size, mtime, missing FROM materials"
             )
+            if (row["ext"] or "").lower() in MATERIAL_EXTS
+            and (not root or is_under_root(row["path"], root))
         ]
         by_path = {item["path"]: item for item in items}
         for item in items:
@@ -1724,12 +1780,13 @@ class StudyDatabase:
         第二层三张表一个字段都不碰——它们按 path 关联，所以"重新扫描"对用户数据
         天然是无害的，这也是 D6 敢说"索引可以随时重建"的前提。
 
-        `(size, mtime)` 都没变就是 unchanged，不写库；这样日常启动只更新变化的那几行。
+        `(size, mtime, subject)` 都没变就是 unchanged，不写库；这样日常启动只更新变化的那几行。
 
         `complete=False`（扫描被取消）时**禁止标记缺失**：没走完的那棵树里每一个文件
         都会"看起来不在"，把它们全标成丢失，是取消一次索引就毁掉整页状态的做法。
         """
         added = updated = unchanged = 0
+        root = self.get_material_root()
         with self.connection:
             # **按 `path_key` 比对，不按原字符串**：Windows 上正斜杠与反斜杠指向同一个
             # 文件却比不相等，这一条差异曾经让"重新定位过的文件"每次扫描都多出一行。
@@ -1737,7 +1794,7 @@ class StudyDatabase:
             existing = {
                 path_key(row["path"]): row
                 for row in self.connection.execute(
-                    "SELECT id, path, size, mtime, missing FROM materials"
+                    "SELECT id, path, subject, ext, size, mtime, missing FROM materials"
                 )
             }
             seen = set()
@@ -1760,7 +1817,12 @@ class StudyDatabase:
                         )
                     )
                     added += 1
-                elif row["size"] != record["size"] or row["mtime"] != record["mtime"] or row["missing"]:
+                elif (
+                    row["size"] != record["size"]
+                    or row["mtime"] != record["mtime"]
+                    or row["subject"] != record["subject"]
+                    or row["missing"]
+                ):
                     # missing 也走这条路：文件回来了，一行 UPDATE 就把它复原
                     updates.append(
                         (
@@ -1789,14 +1851,29 @@ class StudyDatabase:
                     updates,
                 )
 
-            missing_ids = [
-                row["id"] for key, row in existing.items() if key not in seen and not row["missing"]
-            ]
-            if complete and missing_ids:
-                self.connection.executemany(
-                    "UPDATE materials SET missing = 1 WHERE id = ?",
-                    [(row_id,) for row_id in missing_ids],
-                )
+            out_of_scope_ids = []
+            missing_ids = []
+            for key, row in existing.items():
+                if key in seen:
+                    continue
+                ext = (row["ext"] or "").lower()
+                if ext not in MATERIAL_EXTS or (root and not is_under_root(row["path"], root)):
+                    # 不属于当前资料根目录或非课件/图片后缀的旧第一层索引行直接移除（不碰第二层标签/进度）
+                    out_of_scope_ids.append(row["id"])
+                elif not row["missing"]:
+                    missing_ids.append(row["id"])
+
+            if complete:
+                if out_of_scope_ids:
+                    self.connection.executemany(
+                        "DELETE FROM materials WHERE id = ?",
+                        [(row_id,) for row_id in out_of_scope_ids],
+                    )
+                if missing_ids:
+                    self.connection.executemany(
+                        "UPDATE materials SET missing = 1 WHERE id = ?",
+                        [(row_id,) for row_id in missing_ids],
+                    )
 
             self.connection.execute(
                 """
@@ -2384,7 +2461,7 @@ class StudyDatabase:
                 """
                 SELECT t.id AS track_id, t.path, t.title, t.duration_ms, t.size,
                        t.content_hash, t.kr_text, t.cn_text,
-                       i.sort_order,
+                       i.sort_order, i.kr_page, i.cn_page,
                        g.position_ms, g.pos_a_ms, g.pos_b_ms, g.speed, g.status,
                        g.listened_ms, g.loop_count
                 FROM playlist_items i
@@ -2396,6 +2473,30 @@ class StudyDatabase:
                 (playlist_id,),
             )
         ]
+
+    def set_playlist_item_pages(self, playlist_id: int, track_id: int, kr_page="keep", cn_page="keep") -> None:
+        """记录播放列表中某首曲目绑定的 PDF 页码。
+
+        使用 'keep' 标记未变更项，传入整数更新页码，传入 None 清除绑定。
+        """
+        if playlist_id is None or track_id is None:
+            return
+        updates = []
+        params = []
+        if kr_page != "keep":
+            updates.append("kr_page = ?")
+            params.append(int(kr_page) if kr_page is not None else None)
+        if cn_page != "keep":
+            updates.append("cn_page = ?")
+            params.append(int(cn_page) if cn_page is not None else None)
+        if not updates:
+            return
+        params.extend([playlist_id, track_id])
+        with self.connection:
+            self.connection.execute(
+                f"UPDATE playlist_items SET {', '.join(updates)} WHERE playlist_id = ? AND track_id = ?",
+                tuple(params),
+            )
 
     def reorder_playlist(self, playlist_id, ordered_track_ids):
         """按给定顺序重写 `sort_order`（拖拽排序的落库方式）。

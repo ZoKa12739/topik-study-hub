@@ -59,7 +59,7 @@ import shlex
 import time
 from datetime import datetime
 
-from PySide6.QtCore import QEasingCurve, QPoint, QPointF, QPropertyAnimation, QSize, QThread, QTimer, Qt, QUrl, Signal
+from PySide6.QtCore import QEasingCurve, QPoint, QPointF, QPropertyAnimation, QSize, QThread, QTimer, Qt, QUrl, Signal, QRect
 from PySide6.QtGui import QColor, QDesktopServices, QKeySequence, QShortcut
 from PySide6.QtMultimedia import (
     QAudioInput,
@@ -75,6 +75,7 @@ from PySide6.QtPdfWidgets import QPdfView
 from PySide6.QtWidgets import (
     QApplication,
     QComboBox,
+    QDialog,
     QFileDialog,
     QFrame,
     QHBoxLayout,
@@ -86,6 +87,7 @@ from PySide6.QtWidgets import (
     QMenu,
     QPushButton,
     QSizePolicy,
+    QRubberBand,
     QSlider,
     QSplitter,
     QStackedWidget,
@@ -131,13 +133,15 @@ LOOP_SEQUENTIAL, LOOP_LIST, LOOP_SINGLE = 0, 1, 2
 
 SPEEDS = (("0.5×", 0.5), ("0.75×", 0.75), ("1.0×", 1.0), ("1.25×", 1.25), ("1.5×", 1.5))
 
-# 合成时原音那一路的音量（自己的声音是 1.0）。用户按听感定的：原音压到 75%
-# 才盖不住自己的声音。改这一个数就够，别在视图里另写一个 0.75。
-MIX_ORIGINAL_GAIN = 0.75
+# 合成时原音与人声的音量配比。原音调为 80%，人声放大至 125%（突出人声且不失真）
+MIX_ORIGINAL_GAIN = 0.80
+MIX_VOICE_GAIN = 1.25
 
 COLLAPSED_KEY = "shadowing_list_collapsed"
 SPLITTER_WIDTHS_KEY = "shadowing_splitter_widths"
 PDF_SPLITTER_WIDTHS_KEY = "shadowing_pdf_splitter_widths"
+DUAL_LAYOUT_KEY = "shadowing_dual_layout"
+
 
 # 收起/展开左栏的圆角小按钮（嵌在准备条最左边）。
 # 收起是**整块隐藏**左栏，不把它压成细条。
@@ -238,9 +242,29 @@ class ClickableSlider(QSlider):
 class HandPdfView(QPdfView):
     zoom_requested = Signal(int)
     focused = Signal()
+    text_selected = Signal(str, QPoint)  # (extracted_text, global_pos)
+
+    def __init__(self, parent=None):
+        super().__init__(parent)
+        self._rubber_band = None
+        self._selection_origin = None
+        self._is_selecting = False
 
     def mousePressEvent(self, event):
         self.focused.emit()
+        # 按住 Shift 触发划词选区
+        if event.button() == Qt.MouseButton.LeftButton and (event.modifiers() & Qt.KeyboardModifier.ShiftModifier):
+            self._is_selecting = True
+            self._selection_origin = event.position().toPoint()
+            if not self._rubber_band:
+                self._rubber_band = QRubberBand(QRubberBand.Shape.Rectangle, self.viewport())
+            self._rubber_band.setGeometry(QRect(self._selection_origin, QSize()))
+            self._rubber_band.show()
+            self.setCursor(Qt.CursorShape.IBeamCursor)
+            event.accept()
+            return
+
+        # 原有抓手平移保持不变
         if event.button() == Qt.MouseButton.LeftButton:
             self._dragging = True
             self._drag_pos = event.position().toPoint()
@@ -250,6 +274,12 @@ class HandPdfView(QPdfView):
         super().mousePressEvent(event)
 
     def mouseMoveEvent(self, event):
+        if self._is_selecting and self._rubber_band:
+            rect = QRect(self._selection_origin, event.position().toPoint()).normalized()
+            self._rubber_band.setGeometry(rect)
+            event.accept()
+            return
+
         if getattr(self, "_dragging", False):
             pos = event.position().toPoint()
             delta = pos - self._drag_pos
@@ -261,12 +291,73 @@ class HandPdfView(QPdfView):
         super().mouseMoveEvent(event)
 
     def mouseReleaseEvent(self, event):
+        if self._is_selecting and event.button() == Qt.MouseButton.LeftButton:
+            self._is_selecting = False
+            rect = self._rubber_band.geometry() if self._rubber_band else QRect()
+            if self._rubber_band:
+                self._rubber_band.hide()
+            self.setCursor(Qt.CursorShape.OpenHandCursor)
+            if rect.width() > 8 and rect.height() > 8:
+                self._extract_selected_text(rect, event.globalPosition().toPoint())
+            event.accept()
+            return
+
         if event.button() == Qt.MouseButton.LeftButton and getattr(self, "_dragging", False):
             self._dragging = False
             self.setCursor(Qt.CursorShape.OpenHandCursor)
             event.accept()
             return
         super().mouseReleaseEvent(event)
+
+    def _extract_selected_text(self, viewport_rect: QRect, global_pos: QPoint):
+        page_num = self.pageNavigator().currentPage()
+        
+        # Traverse up to find PdfPanel
+        panel = self
+        pdf_path = None
+        while panel:
+            if hasattr(panel, "_path"):
+                pdf_path = panel._path
+                break
+            panel = panel.parent()
+
+        text = ""
+        if pdf_path and os.path.exists(pdf_path):
+            try:
+                import fitz
+                doc = fitz.open(pdf_path)
+                if 0 <= page_num < len(doc):
+                    page = doc[page_num]
+                    zoom = self.pageNavigator().currentZoom()
+                    
+                    y_top = 0
+                    spacing = self.pageSpacing()
+                    for i in range(page_num):
+                        y_top += self.document().pagePointSize(i).height() * zoom + spacing
+                        
+                    scroll_x = self.horizontalScrollBar().value()
+                    scroll_y = self.verticalScrollBar().value()
+                    
+                    # QPdfView centers pages horizontally if they are narrower than viewport
+                    doc_width = self.document().pagePointSize(page_num).width() * zoom
+                    x_offset = max(0, (self.viewport().width() - doc_width) / 2)
+                    
+                    x_in_page = viewport_rect.x() + scroll_x - x_offset
+                    y_in_page = viewport_rect.y() + scroll_y - y_top
+                    
+                    rx = x_in_page / zoom
+                    ry = y_in_page / zoom
+                    rw = viewport_rect.width() / zoom
+                    rh = viewport_rect.height() / zoom
+                    
+                    clip = fitz.Rect(rx, ry, rx + rw, ry + rh)
+                    text = page.get_text("text", clip=clip).strip()
+            except Exception:
+                pass
+        
+        text = " ".join(text.split())
+        if text:
+            self.text_selected.emit(text, global_pos)
 
     def enterEvent(self, event):
         self.setCursor(Qt.CursorShape.OpenHandCursor)
@@ -281,6 +372,67 @@ class HandPdfView(QPdfView):
         super().wheelEvent(event)
 
 
+class AddWordDialog(QDialog):
+    def __init__(self, korean: str, context_source: str = "", parent=None):
+        super().__init__(parent)
+        self.setWindowTitle("加入生词本")
+        self.setFixedWidth(420)
+        self.setObjectName("addWordDialog")
+        
+        layout = QVBoxLayout(self)
+        layout.setSpacing(16)
+        layout.setContentsMargins(20, 20, 20, 20)
+        
+        # 单词输入
+        word_layout = QVBoxLayout()
+        word_layout.setSpacing(8)
+        lbl_word = QLabel("韩语单词")
+        lbl_word.setObjectName("muted")
+        self.edit_word = QLineEdit(korean)
+        self.edit_word.setObjectName("searchBox")
+        word_layout.addWidget(lbl_word)
+        word_layout.addWidget(self.edit_word)
+        layout.addLayout(word_layout)
+        
+        # 释义输入
+        meaning_layout = QVBoxLayout()
+        meaning_layout.setSpacing(8)
+        lbl_meaning = QLabel("中文释义")
+        lbl_meaning.setObjectName("muted")
+        self.edit_meaning = QLineEdit()
+        self.edit_meaning.setObjectName("searchBox")
+        self.edit_meaning.setPlaceholderText("输入中文释义（可选，回车保存）")
+        meaning_layout.addWidget(lbl_meaning)
+        meaning_layout.addWidget(self.edit_meaning)
+        layout.addLayout(meaning_layout)
+        
+        # 来源展示
+        if context_source:
+            lbl_source = QLabel(context_source)
+            lbl_source.setObjectName("faint")
+            layout.addWidget(lbl_source)
+            
+        # 底部按钮
+        btn_layout = QHBoxLayout()
+        btn_layout.addStretch()
+        
+        btn_cancel = QPushButton("取消")
+        btn_cancel.setObjectName("secondaryBtn")
+        btn_cancel.clicked.connect(self.reject)
+        btn_layout.addWidget(btn_cancel)
+        
+        btn_save = QPushButton("保存 (Enter)")
+        btn_save.setObjectName("primaryBtn")
+        btn_save.clicked.connect(self.accept)
+        btn_layout.addWidget(btn_save)
+        
+        layout.addLayout(btn_layout)
+        
+        self.edit_meaning.returnPressed.connect(self.accept)
+        self.edit_meaning.setFocus()
+
+
+
 class PdfPanel(QFrame):
     """一份 PDF 的阅读面板（4.3 的对照区）。
 
@@ -289,9 +441,11 @@ class PdfPanel(QFrame):
     """
 
     choose_requested = Signal()
+    pin_requested = Signal()
     page_changed = Signal()
     focused = Signal()
     zoom_requested = Signal(int)
+    text_selected = Signal(str, QPoint)
 
     def __init__(self, heading, empty_hint, parent=None):
         super().__init__(parent)
@@ -316,6 +470,13 @@ class PdfPanel(QFrame):
         self.lbl_page = QLabel("")
         self.lbl_page.setObjectName("faint")
         head.addWidget(self.lbl_page)
+        self.btn_pin = QPushButton()
+        self.btn_pin.setObjectName("iconButton")
+        self.btn_pin.setIcon(icon("pin"))
+        self.btn_pin.setToolTip(f"将当前页设为当前曲目的{heading}起始页")
+        self.btn_pin.setEnabled(False)
+        self.btn_pin.clicked.connect(self.pin_requested.emit)
+        head.addWidget(self.btn_pin)
         self.btn_open = QPushButton()
         self.btn_open.setObjectName("iconButton")
         self.btn_open.setIcon(icon("folder-open"))
@@ -356,6 +517,7 @@ class PdfPanel(QFrame):
         self.view.pageNavigator().currentPageChanged.connect(self._on_page_changed)
         self.view.focused.connect(self.focused.emit)
         self.view.zoom_requested.connect(self.zoom_requested.emit)
+        self.view.text_selected.connect(self.text_selected.emit)
 
     def path(self):
         return self._path
@@ -376,6 +538,7 @@ class PdfPanel(QFrame):
         """载入一份 PDF 并跳到 `page`。空路径或文件不存在 → 切到空状态并把原因写在标题行。"""
         self._path = None
         self.btn_open.setEnabled(False)
+        self.btn_pin.setEnabled(False)
         self.lbl_page.setText("")
         if not path:
             self.lbl_name.setText("未选择")
@@ -397,6 +560,7 @@ class PdfPanel(QFrame):
         self.lbl_name.setText(elide(os.path.basename(path)))
         self.lbl_name.setToolTip(path)
         self.btn_open.setEnabled(True)
+        self.btn_pin.setEnabled(True)
         self.stack.setCurrentIndex(0)
         self.jump_to_page(page)
         return True
@@ -404,18 +568,22 @@ class PdfPanel(QFrame):
     def jump_to_page(self, page):
         """跳到第 `page` 页（1 起）。读数取不到就当 1.0——
         `jump` 的 zoom 传 0 会把视图缩成一个点，宁可给个正常值。"""
+        if self.document.pageCount() <= 0:
+            return
         navigator = self.view.pageNavigator()
         try:
             zoom = float(navigator.currentZoom()) or 1.0
         except (TypeError, ValueError, AttributeError):
             zoom = 1.0
         try:
-            navigator.jump(max(0, int(page) - 1), QPointF(0.0, 0.0), zoom)
-        except TypeError:
+            target = max(1, min(int(page), self.document.pageCount()))
+            navigator.jump(target - 1, QPointF(0.0, 0.0), zoom)
+        except (TypeError, ValueError):
             return
         self.lbl_page.setText(f"第 {self.current_page()} 页")
 
     def _show_hint(self):
+        self.btn_pin.setEnabled(False)
         if hasattr(self.document, "close"):
             self.document.close()
         self.stack.setCurrentIndex(1)
@@ -541,6 +709,7 @@ class ShadowingView(QWidget):
         self._banner_action = None
         self._closed = False
         self._collapsed = False
+        self._dual_layout = True
         self._drawer_anim = None
         self._active_pdf = None
         self.pdf_zoom = None
@@ -691,6 +860,13 @@ class ShadowingView(QWidget):
         row.addWidget(self.lbl_zoom)
         row.addWidget(self.btn_zoom_in)
         row.addWidget(self.btn_zoom_fit)
+
+        self.btn_layout_toggle = QPushButton("双栏对照")
+        self.btn_layout_toggle.setObjectName("iconButton")
+        self.btn_layout_toggle.setIcon(icon("book"))
+        self.btn_layout_toggle.setToolTip("切换单栏专注/双栏对照模式 (Ctrl+\\)")
+        self.btn_layout_toggle.clicked.connect(self.toggle_dual_layout)
+        row.addWidget(self.btn_layout_toggle)
         box.addLayout(row)
 
         self.lbl_status = QLabel("")
@@ -805,6 +981,10 @@ class ShadowingView(QWidget):
         self.cn_pdf.focused.connect(lambda: self._set_active_pdf(self.cn_pdf))
         self.kr_pdf.zoom_requested.connect(lambda d: self.step_zoom(d, self.kr_pdf))
         self.cn_pdf.zoom_requested.connect(lambda d: self.step_zoom(d, self.cn_pdf))
+        self.kr_pdf.pin_requested.connect(lambda: self._pin_active_track_page("kr"))
+        self.cn_pdf.pin_requested.connect(lambda: self._pin_active_track_page("cn"))
+        self.kr_pdf.text_selected.connect(lambda text, pos: self._on_pdf_text_selected(text, pos, self.kr_pdf))
+        self.cn_pdf.text_selected.connect(lambda text, pos: self._on_pdf_text_selected(text, pos, self.cn_pdf))
         pdf_split.addWidget(self.kr_pdf)
         pdf_split.addWidget(self.cn_pdf)
         pdf_split.setSizes([520, 520])
@@ -1042,6 +1222,13 @@ class ShadowingView(QWidget):
             shortcut.activated.connect(handler)
             self._shortcuts.append(shortcut)
 
+        toggle_layout_shortcut = QShortcut(
+            QKeySequence(Qt.KeyboardModifier.ControlModifier | Qt.Key.Key_Backslash), self
+        )
+        toggle_layout_shortcut.setContext(Qt.WidgetWithChildrenShortcut)
+        toggle_layout_shortcut.activated.connect(self.toggle_dual_layout)
+        self._shortcuts.append(toggle_layout_shortcut)
+
         # 单字母键单独建：它们要在"正在打字"时**真的被禁用**，而不是"触发后自己
         # 判断一下再退出"。两者的差别是实打实的——`QShortcut` 会在按键送达文本框
         # 之前把它截走，光靠处理函数里 `return` 的话，用户在输入框里打不出 `a`。
@@ -1081,6 +1268,7 @@ class ShadowingView(QWidget):
         self.reload_playlists()
         self.reload_tracks()
         self._apply_collapsed(self.database.get_setting(COLLAPSED_KEY) == "1")
+        self._apply_dual_layout(self.database.get_setting(DUAL_LAYOUT_KEY, "1") == "1")
         self.apply_audio_devices()
         if self.track_id is None:
             self._render_track(None)
@@ -1161,6 +1349,14 @@ class ShadowingView(QWidget):
             if count > 0:
                 pills.append((f"已听 {count} 次", is_active))
             pills.append((duration, True))
+            kr_page = item.get("kr_page")
+            cn_page = item.get("cn_page")
+            if kr_page and cn_page:
+                pills.append((f"P.{kr_page} / P.{cn_page}", True))
+            elif kr_page:
+                pills.append((f"原文 P.{kr_page}", True))
+            elif cn_page:
+                pills.append((f"解析 P.{cn_page}", True))
             entry.setData(PillListDelegate.PILL_ROLE, pills)
 
     def _track_line(self, index, item):
@@ -1176,6 +1372,14 @@ class ShadowingView(QWidget):
             if count > 0:
                 bits.append(f"已听 {count} 次")
             bits.append(duration)
+            kr_page = item.get("kr_page")
+            cn_page = item.get("cn_page")
+            if kr_page and cn_page:
+                bits.append(f"P.{kr_page} / P.{cn_page}")
+            elif kr_page:
+                bits.append(f"原文 P.{kr_page}")
+            elif cn_page:
+                bits.append(f"解析 P.{cn_page}")
             second = " · ".join(bits)
         return f"{index}. {elide(item['title'], 22)}\n{second}"
 
@@ -1398,7 +1602,7 @@ class ShadowingView(QWidget):
         self._expanded_width = width
 
     def _save_pdf_splitter_width(self, splitter):
-        if self._restoring_splitter_widths: return
+        if self._restoring_splitter_widths or not getattr(self, "_dual_layout", True): return
         sizes = splitter.sizes()
         if len(sizes) < 2 or sizes[0] < 240 or sizes[1] < 240: return
         values = self._load_width_map(PDF_SPLITTER_WIDTHS_KEY)
@@ -1407,13 +1611,38 @@ class ShadowingView(QWidget):
 
     def _restore_pdf_splitter_width(self, splitter):
         width = self._load_width_map(PDF_SPLITTER_WIDTHS_KEY).get("shadowing_pdf")
-        if not isinstance(width, int): return
         total = sum(splitter.sizes())
         if total <= 0: return
+        if not isinstance(width, int):
+            width = total // 2
         width = max(240, min(width, max(240, total - 240)))
         self._restoring_splitter_widths = True
         splitter.setSizes([width, max(1, total - width)])
         self._restoring_splitter_widths = False
+
+    def toggle_dual_layout(self):
+        """切换单栏专注（仅原文）与双栏对照（原文+解析）。"""
+        self._apply_dual_layout(not getattr(self, "_dual_layout", True))
+        self.database.set_setting(DUAL_LAYOUT_KEY, "1" if self._dual_layout else "0")
+
+    def _apply_dual_layout(self, dual: bool):
+        self._dual_layout = bool(dual)
+        if self._dual_layout:
+            self.cn_pdf.setVisible(True)
+            self.btn_layout_toggle.setText("双栏对照")
+            self.btn_layout_toggle.setIcon(icon("book"))
+            self.btn_layout_toggle.setToolTip("当前为双栏对照，点击切换为单栏专注 (Ctrl+\\)")
+            self._restore_pdf_splitter_width(self._pdf_splitter)
+            self._set_active_pdf(self.kr_pdf)
+            QTimer.singleShot(50, lambda: (self.fit_pdf_width(self.kr_pdf), self.fit_pdf_width(self.cn_pdf)))
+        else:
+            self._save_pdf_splitter_width(self._pdf_splitter)
+            self.cn_pdf.setVisible(False)
+            self.btn_layout_toggle.setText("仅原文")
+            self.btn_layout_toggle.setIcon(icon("file-text"))
+            self.btn_layout_toggle.setToolTip("当前为仅原文专注模式，点击切换为双栏对照 (Ctrl+\\)")
+            self._set_active_pdf(self.kr_pdf)
+            QTimer.singleShot(50, lambda: self.fit_pdf_width(self.kr_pdf))
 
     # ==================================================================
     # 对照 PDF（挂在播放列表上）
@@ -1588,11 +1817,29 @@ class ShadowingView(QWidget):
     def _on_track_clicked(self, entry):
         self.load_track(entry.data(Qt.UserRole))
 
+    def _jump_to_track_pages(self, track_id):
+        """若曲目绑定了页码，且 PDF 已加载，则平滑跳转。"""
+        playlist_item = next((it for it in self._items if it["track_id"] == track_id), None)
+        if not playlist_item:
+            return
+        kr_page = playlist_item.get("kr_page")
+        if kr_page and self.kr_pdf.document.pageCount() > 0:
+            self._loading_pages = True
+            self.kr_pdf.jump_to_page(kr_page)
+            self._loading_pages = False
+
+        cn_page = playlist_item.get("cn_page")
+        if cn_page and self.cn_pdf.document.pageCount() > 0:
+            self._loading_pages = True
+            self.cn_pdf.jump_to_page(cn_page)
+            self._loading_pages = False
+
     def load_track(self, track_id, autoplay=True):
         """切到某一段。**先把上一段的欠账结清**：时长、位置、AB、语速一起落库。"""
         if track_id is None:
             return
         if track_id == self.track_id:
+            self._jump_to_track_pages(track_id)
             if autoplay and self.player.playbackState() != QMediaPlayer.PlaybackState.PlayingState:
                 self.player.play()
             return
@@ -1612,6 +1859,7 @@ class ShadowingView(QWidget):
         # 列表里那一行也要跟着亮起来：自动推进到下一段时是程序在换曲目，
         # 不主动同步的话高亮还停在上一行，看起来像"点错了"。
         self._sync_track_selection()
+        self._jump_to_track_pages(track_id)
 
         progress = self.database.track_progress(track_id)
         self.pos_a = progress["pos_a_ms"] if progress["pos_a_ms"] is not None else -1
@@ -2230,7 +2478,8 @@ class ShadowingView(QWidget):
 
         now = time.monotonic()
         if recording:
-            if not was_active:
+            if self._rec_started is None:
+                # 录音首次开始写入：初始化计时与轨迹
                 self._record_seconds = 0
                 self._record_paused_at = None
                 self._record_paused_total = 0.0
@@ -2238,13 +2487,15 @@ class ShadowingView(QWidget):
                 self._rec_started = now
                 self._rec_segments = []
             elif self._record_paused_at is not None:
+                # 从暂停恢复：累计暂停时长，保留已有轨迹与计时
                 self._record_paused_total += max(0.0, now - self._record_paused_at)
                 self._record_paused_at = None
             self._record_timer.start()
             self._rec_open_segment()
         elif paused:
             self._record_timer.stop()
-            if self._record_paused_at is None: self._record_paused_at = now
+            if self._record_paused_at is None:
+                self._record_paused_at = now
             self._rec_close_segment()
         else:
             self._record_timer.stop()
@@ -2498,11 +2749,14 @@ class ShadowingView(QWidget):
           （`1000|1000`），先统一才写得对，也省得 amix 去猜两路的布局。
         * **语速算进去**：0.75 倍速下，同样的录音秒数只走过四分之三的素材，所以
           先按 `时长 × 语速` 截取，再用 `atempo` 拉回同样的时长，才和你听到的对齐。
-        * **`adelay` 必须在 `atempo` 之前，且延迟先乘语速。** 反过来写（先 atempo 再
-          adelay）ffmpeg 7.1 会让第一帧带一个接近 INT64_MAX 的 PTS，整条 m4a 写出
-          来没有可读的时长（`Duration: N/A`、码率 70929 kb/s），播放器拖不动。
-          atempo 是整条流等比缩放，所以延迟先乘语速、之后被缩回去，长度正好。
-          别再"顺手"把两个滤镜调换回来。
+        * **用 `asetpts=N/SR/TB` 在每路末尾与 `amix` 之后按采样数重建时间戳**：
+          FFmpeg 7.1 中 `-ss` 跳转后的 MP3 经过 `aformat` + `adelay` 时，若依赖原流的
+          `PTS-STARTPTS`，在 `adelay` 插入静音段交界处会产生接近 `INT64_MAX`
+          （`9223372036854774862`）的异常 DTS；持续约 945 帧（~20 秒）累加触顶到
+          `INT64_MAX`（`9223372036854775807`）后，MP4/ipod 封装器即因
+          `non monotonically increasing dts` 报错退出（`-22 Invalid argument`）。
+          改为在 `adelay`/`atempo` 之后以及 `amix` 汇总之后统一用 `asetpts=N/SR/TB`
+          直接按累计采样数生成严格单调递增的 PTS，彻底消除时间戳溢出。
         """
         args = ["-y", "-nostdin"]
         filters = []
@@ -2514,32 +2768,30 @@ class ShadowingView(QWidget):
                 "-t", f"{wall * speed:.3f}",
                 "-i", segment["path"],
             ]
-            # volume 放在最前面：它只按样本做增益，离 atempo/adelay 那套时间戳机制
-            # 越远越好（顺序坑见上面那条）
             chain = (
                 "aformat=sample_fmts=fltp:sample_rates=48000:channel_layouts=stereo,"
-                f"volume={MIX_ORIGINAL_GAIN},"
-                "asetpts=PTS-STARTPTS"
+                f"volume={MIX_ORIGINAL_GAIN}"
             )
             delay = int(round(float(segment["start"]) * speed * 1000))
             if delay > 0:
                 chain += f",adelay={delay}|{delay}"
             if abs(speed - 1.0) > 0.01:
                 chain += f",atempo={speed:.4f}"
+            chain += ",asetpts=N/SR/TB"
             filters.append(f"[{index}:a]{chain}[s{index}]")
 
         voice = len(segments)
         args += ["-i", location]
         filters.append(
             f"[{voice}:a]aformat=sample_fmts=fltp:sample_rates=48000:"
-            f"channel_layouts=stereo,asetpts=PTS-STARTPTS[v]"
+            f"channel_layouts=stereo,volume={MIX_VOICE_GAIN},asetpts=N/SR/TB[v]"
         )
         # normalize=0：amix 默认会把每路都压一半，那样原音就比你听的时候小一截。
         # duration=longest：麦克风那一路是时间轴的真相——暂停时原音本来就该是静的，
         # 录完还在停着的那几秒也只该剩下你的声音。
         mix = "".join(f"[s{index}]" for index in range(len(segments))) + "[v]"
         filters.append(
-            f"{mix}amix=inputs={len(segments) + 1}:duration=longest:normalize=0[a]"
+            f"{mix}amix=inputs={len(segments) + 1}:duration=longest:normalize=0,asetpts=N/SR/TB[a]"
         )
         args += [
             "-filter_complex", ";".join(filters),
@@ -2828,6 +3080,11 @@ class ShadowingView(QWidget):
         reimport = menu.addAction("重新导入这个音频…")
         reimport.setEnabled(missing)
         menu.addSeparator()
+        act_pin = menu.addAction("📌 将当前页码设为本曲起始页")
+        act_clear_pin = menu.addAction("清除本曲绑定的页码")
+        if item and not item.get("kr_page") and not item.get("cn_page"):
+            act_clear_pin.setEnabled(False)
+        menu.addSeparator()
         remove = menu.addAction("移出列表")
         menu.addSeparator()
         rename_list = menu.addAction("重命名列表…")
@@ -2843,6 +3100,10 @@ class ShadowingView(QWidget):
             self._reveal(track_id)
         elif chosen is reimport:
             self.reimport_track(track_id)
+        elif chosen is act_pin:
+            self._pin_track_pages(track_id, item)
+        elif chosen is act_clear_pin:
+            self._clear_track_pages(track_id, item)
         elif chosen is remove:
             self.track_id = track_id
             self.remove_current_from_playlist()
@@ -2850,6 +3111,71 @@ class ShadowingView(QWidget):
             self.rename_current_playlist()
         elif chosen is delete_list:
             self.delete_current_playlist()
+
+    def _pin_active_track_page(self, which):
+        """面板图钉点击：将当前所在页设为当前曲目的起始页。"""
+        if self.playlist_id is None or self.track_id is None:
+            show_toast(self.window(), "请先在左侧选择一首曲目", "warning")
+            return
+        panel = self.kr_pdf if which == "kr" else self.cn_pdf
+        which_name = "原文" if which == "kr" else "解析"
+        if not panel.path():
+            show_toast(self.window(), f"当前未载入{which_name} PDF", "warning")
+            return
+        page = panel.current_page()
+        item = self._current_item()
+        track_title = item["title"] if item else "当前曲目"
+
+        if which == "kr":
+            self.database.set_playlist_item_pages(self.playlist_id, self.track_id, kr_page=page)
+            if item:
+                item["kr_page"] = page
+        else:
+            self.database.set_playlist_item_pages(self.playlist_id, self.track_id, cn_page=page)
+            if item:
+                item["cn_page"] = page
+
+        self._reload_track_row()
+        show_toast(self.window(), f"已将「{track_title}」关联至 {which_name} P.{page}")
+
+    def _pin_track_pages(self, track_id, item):
+        """右键菜单：一次性将原文与解析的当前页设为该曲目的起始页。"""
+        if self.playlist_id is None or track_id is None:
+            return
+        kr_page = self.kr_pdf.current_page() if self.kr_pdf.path() else None
+        cn_page = self.cn_pdf.current_page() if self.cn_pdf.path() else None
+        if kr_page is None and cn_page is None:
+            show_toast(self.window(), "当前未载入任何 PDF，无法绑定页码", "warning")
+            return
+        self.database.set_playlist_item_pages(
+            self.playlist_id, track_id, kr_page=kr_page, cn_page=cn_page
+        )
+        if item:
+            item["kr_page"] = kr_page
+            item["cn_page"] = cn_page
+        self._reload_track_row()
+        pages = []
+        if kr_page:
+            pages.append(f"原文 P.{kr_page}")
+        if cn_page:
+            pages.append(f"解析 P.{cn_page}")
+        pages_text = " / ".join(pages)
+        title = item["title"] if item else "本曲"
+        show_toast(self.window(), f"已将「{title}」关联至 {pages_text}")
+
+    def _clear_track_pages(self, track_id, item):
+        """右键菜单：清除该曲目绑定的页码。"""
+        if self.playlist_id is None or track_id is None:
+            return
+        self.database.set_playlist_item_pages(
+            self.playlist_id, track_id, kr_page=None, cn_page=None
+        )
+        if item:
+            item["kr_page"] = None
+            item["cn_page"] = None
+        self._reload_track_row()
+        title = item["title"] if item else "本曲"
+        show_toast(self.window(), f"已清除「{title}」绑定的页码")
 
     def _reveal(self, track_id):
         item = self.database.get_track(track_id)
@@ -2909,3 +3235,37 @@ class ShadowingView(QWidget):
             self.reload_tracks()
             self._render_documents()
         self.load_track(state["track_id"], autoplay=False)
+
+    def _on_pdf_text_selected(self, text, global_pos, panel):
+        if not text.strip():
+            return
+            
+        menu = QMenu(self)
+        action_copy = menu.addAction("复制文本")
+        action_add = menu.addAction("加入生词本 (Ctrl+D)")
+        
+        chosen = menu.exec(global_pos)
+        if chosen == action_copy:
+            QApplication.clipboard().setText(text)
+            show_toast(self.window(), "已复制文本")
+        elif chosen == action_add:
+            context = ""
+            playlist_name = self.combo_playlist.currentText()
+            page = panel.current_page()
+            kind_name = "原文" if panel is self.kr_pdf else "解析"
+            item = self._current_item()
+            track_name = item["title"] if item else ""
+            if playlist_name:
+                parts = [f"来源：{playlist_name}"]
+                if track_name:
+                    parts.append(track_name)
+                parts.append(f"{kind_name} P.{page}")
+                context = " ".join(parts)
+                
+            dialog = AddWordDialog(korean=text, context_source=context, parent=self.window())
+            if dialog.exec() == QDialog.DialogCode.Accepted:
+                word = dialog.edit_word.text().strip()
+                meaning = dialog.edit_meaning.text().strip()
+                if word:
+                    self.database.add_single_word("跟读生词本", word, meaning, context)
+                    show_toast(self.window(), f"已将「{word}」加入跟读生词本")

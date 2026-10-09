@@ -313,6 +313,67 @@ class Toast(QLabel):
         self.move(self._target_pos())
 
 
+class LabelMotion:
+    """叶子 `QLabel` 的一次性「淡入 + 微位移」动效，过词/专攻卡专用。
+
+    边界全部来自 `CLAUDE.md` 的微动效黄金法则：
+
+    * **只挂叶子控件**。`QGraphicsOpacityEffect` 一旦挂到容器上，Qt 会把整块区域
+      缓存成位图逐帧重画——440px 的卡片配 42px 韩语大字会直接掉帧，所以这里只对
+      单个 `QLabel` 用，且位移量很小。
+    * **动画对象随宿主 View 存活**：`owner` 传入 View，effect 与 animation 都不被 GC。
+    * **连发打断先归位**：从上一轮的静止点重开，坐标不累积。历史上
+      `VocabView._animate_card_step` 动的是整张卡，连按 `1`/`2`/`3` 时
+      「归位 → 瞬移 → 再滑」，那正是"跳脱"感的来源；现在高频判断已改零动效
+      （`PRODUCT_SPEC` 流程 B：无动画、无确认、无停顿），动效只留给
+      Space 揭示与 Ctrl+Z 回退这类低频、用户主动 paced 的动作。
+    """
+
+    def __init__(self, owner, label):
+        self._label = label
+        self._rest_pos = QPoint()
+        self._effect = QGraphicsOpacityEffect(label)
+        label.setGraphicsEffect(self._effect)
+        self._opacity_anim = QPropertyAnimation(self._effect, b"opacity", owner)
+        self._slide_anim = QPropertyAnimation(label, b"pos", owner)
+
+    def play(self, dx=0, dy=0, duration=110):
+        """从 `(dx, dy)` 偏移处淡入到静止位；`dx`/`dy` 为 0 时只做淡入。"""
+        label = self._label
+        if label is None or not label.isVisible():
+            return
+
+        self._opacity_anim.stop()
+        if self._slide_anim.state() == QPropertyAnimation.Running:
+            # 上一轮位移没播完：先归位到它的终点，再谈新的起点，防止坐标累积
+            self._slide_anim.stop()
+            label.move(self._rest_pos)
+        else:
+            parent = label.parentWidget()
+            if parent is not None and parent.layout() is not None:
+                parent.layout().activate()  # 文本刚换过，确保读到的是布局落点
+            self._rest_pos = label.pos()
+
+        start = QPoint(self._rest_pos.x() + dx, self._rest_pos.y() + dy)
+        label.move(start)
+        self._effect.setOpacity(0.0)
+
+        self._opacity_anim.setDuration(duration)
+        self._opacity_anim.setStartValue(0.0)
+        self._opacity_anim.setEndValue(1.0)
+        self._opacity_anim.setEasingCurve(QEasingCurve.OutCubic)
+        self._opacity_anim.start()
+
+        if dx or dy:
+            self._slide_anim.setDuration(duration)
+            self._slide_anim.setStartValue(start)
+            self._slide_anim.setEndValue(self._rest_pos)
+            self._slide_anim.setEasingCurve(QEasingCurve.OutCubic)
+            self._slide_anim.start()
+        else:
+            self._slide_anim.stop()
+
+
 def make_copyable(label):
     """把一个 `QLabel` 变成"能选中、能复制"的，返回它自己（便于链式写）。
 

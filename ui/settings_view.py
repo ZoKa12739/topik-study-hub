@@ -315,25 +315,37 @@ class SettingsView(QWidget):
     # ---------------------------------------------------------------- 分组四（续）：单词发音
 
     def _build_tts_group(self, layout):
-        """P1 单词发音配置（F3）。"""
+        """P1 单词发音配置（F3 & Azure AI Speech）。"""
         box = self._group(
             layout,
             "单词发音",
-            "智能单词仓（P1）的韩语发音设置。联网模式下首次朗读会通过 Google 语音服务生成音频"
-            "并自动缓存在本机，同一单词再次朗读直接离线秒播；断网时自动退回系统离线语音。",
+            "智能单词仓（P1）的韩语发音设置。联网模式下通过 Azure AI Speech 高保真神经网络声音"
+            "（或 Google 语音服务）生成音频并自动缓存在本机，同一单词再次朗读直接秒播；断网时自动退回系统离线语音。",
         )
 
         self.combo_tts_mode = QComboBox()
-        self.combo_tts_mode.addItem("Google 联网韩语发音（推荐，自动缓存到本地）", "online")
+        self.combo_tts_mode.addItem("云端高保真联网发音（推荐，自动缓存到本地）", "online")
         self.combo_tts_mode.addItem("仅使用系统本地韩语语音（完全离线）", "local")
         self._field_row(box, "发音音源", self.combo_tts_mode, caption_width=110)
 
         self.combo_tts_voice = QComboBox()
         for voice_id, label in TTS_VOICES:
             self.combo_tts_voice.addItem(label, voice_id)
-        self._field_row(box, "发音语速", self.combo_tts_voice, caption_width=110)
+        self._field_row(box, "角色与音质", self.combo_tts_voice, caption_width=110)
 
-        self.lbl_tts_net = QLabel("Google 语音网络：尚未检测（点击右侧「检测网络状态」可测试连通性）")
+        self.input_azure_key = QLineEdit()
+        self.input_azure_key.setEchoMode(QLineEdit.Password)
+        self.input_azure_key.setPlaceholderText("Azure Speech 密钥（已预填，可直接使用）")
+        self.btn_toggle_key = QPushButton("显示")
+        self.btn_toggle_key.setObjectName("iconButton")
+        self.btn_toggle_key.clicked.connect(self._toggle_azure_key_visibility)
+        self.row_azure_key = self._field_row(box, "Azure 密钥", self.input_azure_key, self.btn_toggle_key, caption_width=110)
+
+        self.input_azure_region = QLineEdit()
+        self.input_azure_region.setPlaceholderText("例如 eastus（默认 eastus）")
+        self.row_azure_region = self._field_row(box, "Azure 区域", self.input_azure_region, caption_width=110)
+
+        self.lbl_tts_net = QLabel("云端语音网络：尚未检测（点击右侧「检测网络状态」可测试连通性）")
         self.lbl_tts_net.setObjectName("muted")
         self.lbl_tts_net.setWordWrap(True)
         box.addWidget(self.lbl_tts_net)
@@ -363,6 +375,26 @@ class SettingsView(QWidget):
 
         self.combo_tts_mode.currentIndexChanged.connect(self.save_tts_settings)
         self.combo_tts_voice.currentIndexChanged.connect(self.save_tts_settings)
+        self.input_azure_key.editingFinished.connect(self.save_tts_settings)
+        self.input_azure_region.editingFinished.connect(self.save_tts_settings)
+
+    def _toggle_azure_key_visibility(self):
+        if self.input_azure_key.echoMode() == QLineEdit.Password:
+            self.input_azure_key.setEchoMode(QLineEdit.Normal)
+            self.btn_toggle_key.setText("隐藏")
+        else:
+            self.input_azure_key.setEchoMode(QLineEdit.Password)
+            self.btn_toggle_key.setText("显示")
+
+    def _sync_azure_fields_visibility(self, visible: bool):
+        self.input_azure_key.setVisible(visible)
+        self.btn_toggle_key.setVisible(visible)
+        self.input_azure_region.setVisible(visible)
+        for row in (self.row_azure_key, self.row_azure_region):
+            for i in range(row.count()):
+                w = row.itemAt(i).widget()
+                if w:
+                    w.setVisible(visible)
 
     def _refresh_tts_controls(self):
         mode = self.database.get_tts_mode()
@@ -374,6 +406,12 @@ class SettingsView(QWidget):
         voice_idx = self.combo_tts_voice.findData(voice)
         self.combo_tts_voice.setCurrentIndex(voice_idx if voice_idx >= 0 else 0)
         self.combo_tts_voice.setEnabled(mode == "online")
+
+        self.input_azure_key.setText(self.database.get_azure_speech_key())
+        self.input_azure_region.setText(self.database.get_azure_speech_region())
+        is_azure = voice.startswith("azure_")
+        self._sync_azure_fields_visibility(is_azure and mode == "online")
+
         self.combo_tts_mode.blockSignals(False)
         self.combo_tts_voice.blockSignals(False)
 
@@ -382,20 +420,31 @@ class SettingsView(QWidget):
         voice = self.combo_tts_voice.currentData() or TTS_VOICES[0][0]
         self.database.set_tts_mode(mode)
         self.database.set_tts_voice(voice)
+        self.database.set_azure_speech_key(self.input_azure_key.text().strip())
+        self.database.set_azure_speech_region(self.input_azure_region.text().strip())
         self.combo_tts_voice.setEnabled(mode == "online")
+        is_azure = voice.startswith("azure_")
+        self._sync_azure_fields_visibility(is_azure and mode == "online")
         show_toast(self.window(), "单词发音设置已保存")
 
     def check_tts_network(self, manual: bool = False):
-        """后台实测 Google 语音服务连通性与延迟。"""
+        """后台实测所选语音服务连通性与延迟。"""
         if self._tts_probe_worker is not None and self._tts_probe_worker.isRunning():
             return
         self._tts_net_checked = True
         self.btn_check_tts_net.setEnabled(False)
-        self.lbl_tts_net.setText("Google 语音网络：正在检测连通性…")
+        self.lbl_tts_net.setText("云端语音网络：正在检测连通性…")
         set_state(self.lbl_tts_net, "muted")
 
         voice = self.combo_tts_voice.currentData() or self.database.get_tts_voice()
-        worker = TTSNetworkProbeWorker(voice=voice, parent=self)
+        azure_key = self.input_azure_key.text().strip() or self.database.get_azure_speech_key()
+        azure_region = self.input_azure_region.text().strip() or self.database.get_azure_speech_region()
+        worker = TTSNetworkProbeWorker(
+            voice=voice,
+            azure_key=azure_key,
+            azure_region=azure_region,
+            parent=self,
+        )
         self._tts_probe_worker = worker
         worker.probed.connect(
             lambda ok, detail, m=manual: self._on_tts_net_probed(ok, detail, m)
@@ -406,12 +455,12 @@ class SettingsView(QWidget):
     def _on_tts_net_probed(self, ok: bool, detail: str, manual: bool = False):
         self._tts_probe_worker = None
         self.btn_check_tts_net.setEnabled(True)
-        self.lbl_tts_net.setText(f"Google 语音网络：{detail}")
+        self.lbl_tts_net.setText(f"云端语音网络：{detail}")
         set_state(self.lbl_tts_net, "success" if ok else "warning")
         if manual:
             show_toast(
                 self.window(),
-                f"Google 语音网络：{detail}",
+                f"云端语音网络：{detail}",
                 level="info" if ok else "warning",
             )
 

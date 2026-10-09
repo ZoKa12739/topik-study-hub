@@ -31,8 +31,18 @@ AUDIO_DIR = DATA_DIR / "audio"            # P2 音频库（D15 决策，第 5 �
 RECORDINGS_DIR = DATA_DIR / "recordings"  # P2 跟读录音的默认落点（P5 可改，见 settings 表）
 TTS_DIR = DATA_DIR / "tts"                # P1 单词发音缓存目录（F3 联网发音本地缓存）
 
-# 资料库里被认作"科目"的子文件夹。资料根目录 = 同时含有这四者的目录。
+# 资料库里被认作"科目"的四个标准分类，以及未匹配时的"其他"兜底分类。
 SUBJECT_FOLDERS = ("写作", "听力", "阅读", "单词")
+OTHER_SUBJECT = "其他"
+MATERIAL_SUBJECTS = (*SUBJECT_FOLDERS, OTHER_SUBJECT)
+
+# 智能科目推断关键词（按科目顺序匹配）
+_SUBJECT_KEYWORDS = (
+    ("写作", ("写作", "작문", "쓰기", "作文")),
+    ("听力", ("听力", "듣기")),
+    ("阅读", ("阅读", "읽기")),
+    ("单词", ("单词", "词汇", "어휘", "단어")),
+)
 
 # 探测时要跳过的目录名：项目自身、字体缓存、Python 缓存
 _SKIP_DIRS = {"TOPIK_Study_Hub", "_font_cache", "__pycache__", ".git", ".workbuddy"}
@@ -41,9 +51,10 @@ _SKIP_DIRS = {"TOPIK_Study_Hub", "_font_cache", "__pycache__", ".git", ".workbud
 DEFAULT_EXAM_DATE = "2027-04-11"
 DEFAULT_EXAM_LABEL = "第 109 届 TOPIK 考试"
 
-# 默认单词发音配置（F3）
+# 默认单词发音配置（F3 & Azure AI Speech）
 DEFAULT_TTS_MODE = "online"
-DEFAULT_TTS_VOICE = "google_ko"
+DEFAULT_TTS_VOICE = "azure_ko_dragon_hd"
+DEFAULT_AZURE_REGION = "eastus"
 
 
 # 当前 schema 版本（PRODUCT_SPEC 6.4）。每次表结构变更都要 +1 并补一段迁移。
@@ -55,7 +66,8 @@ DEFAULT_TTS_VOICE = "google_ko"
 # v6：playlists 补 kr_pdf / cn_pdf——每份列表配"原文"与"解析"两份 PDF
 # v7：playlists 再补 kr_page / cn_page——两份 PDF 各自记住读到第几页
 # v8：P4 知识碎片——snippets / snippet_tags（纯加法，没有要搬运的旧数据）
-SCHEMA_VERSION = 8
+# v9：playlist_items 补 kr_page / cn_page——曲目级页码关联（切题自动翻页）
+SCHEMA_VERSION = 9
 
 
 def normalize_path(path):
@@ -80,12 +92,23 @@ def path_key(path):
     return os.path.normcase(normalize_path(path))
 
 
-def subject_of(path, root):
-    """从路径反推科目：资料根之下**第一个**与科目同名的目录。
+def is_under_root(path, root):
+    """判断 `path` 是否位于 `root` 目录树下（含 `root` 本身）。"""
+    if not path or not root:
+        return False
+    try:
+        pk = path_key(path)
+        rk = path_key(root)
+        return os.path.commonpath([pk, rk]) == rk
+    except ValueError:
+        return False
 
-    不把科目当成"索引时记下来的属性"，而是每次都从路径现推——这样「重新定位」
-    把一个文件从 `单词/` 挪到 `阅读/` 之后，科目自动跟着新位置走，而不是永远停在
-    被索引的那一次上。
+
+def subject_of(path, root):
+    """从路径反推科目：严格按「精确同名目录 > 目录名含关键词 > 文件名含关键词 > 其他」优先级。
+
+    优先从距离文件最近的父目录向上查找，避免文件名中的偶发字眼覆盖所属目录分类，
+    同时支持多层嵌套或任意命名的资料根目录。若不在 `root` 之下则返回 `None`。
     """
     if not root:
         return None
@@ -93,12 +116,34 @@ def subject_of(path, root):
         relative = os.path.relpath(normalize_path(path), normalize_path(root))
     except ValueError:
         return None   # 不同盘符，没有相对路径
-    if relative.startswith(".."):
+    if relative == ".." or relative.startswith(".." + os.sep):
         return None   # 不在资料根之下
-    for part in relative.split(os.sep)[:-1]:
+
+    parts = [p for p in relative.split(os.sep) if p and p != "."]
+    if not parts:
+        return OTHER_SUBJECT
+    dir_parts = parts[:-1]
+    file_stem = os.path.splitext(parts[-1])[0].lower()
+
+    # 1. 精确同名目录（从最近父目录向上）
+    for part in reversed(dir_parts):
         if part in SUBJECT_FOLDERS:
             return part
-    return None
+
+    # 2. 目录名含关键词（从最近父目录向上）
+    for part in reversed(dir_parts):
+        lower_part = part.lower()
+        for subject, keywords in _SUBJECT_KEYWORDS:
+            if any(kw in lower_part for kw in keywords):
+                return subject
+
+    # 3. 文件名含关键词
+    for subject, keywords in _SUBJECT_KEYWORDS:
+        if any(kw in file_stem for kw in keywords):
+            return subject
+
+    # 4. 兜底归入「其他」
+    return OTHER_SUBJECT
 
 
 def detect_material_root(search_base=None, max_depth=3):

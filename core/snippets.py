@@ -52,11 +52,13 @@ def collect_records(material_rows, existing, snippets_dir=SNIPPETS_DIR):
       工作量与实际变化量成正比，而不是与碎片总数成正比。
     """
     records = []
+    seen_in_materials = set()
 
     for row in material_rows:
         if not is_image(row["name"]):
             continue
         path = row["path"]
+        seen_in_materials.add(path)
         subject = row.get("subject") or ""
         missing = bool(row.get("missing"))
         known = existing.get(path)
@@ -95,16 +97,23 @@ def collect_records(material_rows, existing, snippets_dir=SNIPPETS_DIR):
         )
 
     for path, known in existing.items():
-        if path in live or bool(known["missing"]):
-            continue   # 文件还在，或者早就标过缺失了
-        # 只处理收集目录里的：资料库那边的存在性由 P3 的索引说了算，不在这里猜。
+        if path in live or path in seen_in_materials:
+            continue
         if _direct_child_of(path, directory):
+            now_missing = True
+            default_subject = COLLECTED_SOURCE
+        else:
+            # 不在当前资料库快照里的历史碎片（例如切换了资料根目录）：只要磁盘上原图片文件还在，
+            # 就继续保留展示，绝不因切换根目录而消失；若曾被误标为 missing=1 也会在此自愈恢复。
+            now_missing = not os.path.isfile(path)
+            default_subject = ""
+        if bool(known["missing"]) != now_missing:
             records.append(
                 {
                     "path": path,
                     "name": os.path.basename(path),
-                    "source_subject": known["source_subject"] or COLLECTED_SOURCE,
-                    "missing": True,
+                    "source_subject": known["source_subject"] or default_subject,
+                    "missing": now_missing,
                 }
             )
 

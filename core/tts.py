@@ -18,17 +18,27 @@ import re
 import time
 import urllib.parse
 import urllib.request
+import xml.etree.ElementTree as ET
 from pathlib import Path
 
 from PySide6.QtCore import QLocale, QObject, QThread, QUrl, Signal
 from PySide6.QtMultimedia import QAudioOutput, QMediaDevices, QMediaPlayer
 
-from core.config import DEFAULT_TTS_VOICE, TTS_DIR
+from core.config import DEFAULT_AZURE_KEY, DEFAULT_AZURE_REGION, DEFAULT_TTS_VOICE, TTS_DIR
 
 TTS_VOICES = (
-    ("google_ko", "Google 韩语标准发音（默认）"),
+    ("azure_ko_dragon_hd", "Azure SunHi Dragon HD Latest（高清自然，推荐）"),
+    ("azure_ko_dragon_hd_slow", "Azure SunHi Dragon HD Latest（慢速精读 0.9x）"),
+    ("azure_ko_sunhi_standard", "Azure SunHi 标准女声 (ko-KR-SunHiNeural)"),
+    ("google_ko", "Google 韩语标准发音"),
     ("google_ko_slow", "Google 韩语慢速清晰发音"),
 )
+
+_AZURE_VOICE_SPECS = {
+    "azure_ko_dragon_hd": ("ko-KR-SunHi:DragonHDLatestNeural", "1.0"),
+    "azure_ko_dragon_hd_slow": ("ko-KR-SunHi:DragonHDLatestNeural", "0.9"),
+    "azure_ko_sunhi_standard": ("ko-KR-SunHiNeural", "1.0"),
+}
 
 _BASE_USER_AGENT = (
     "Mozilla/5.0 (Windows NT 10.0; Win64; x64) "
@@ -55,7 +65,7 @@ _STRIP_SYMBOLS = re.compile(r"[-~∼―·*…_+=<>]+")
 # 并列分隔符替换为逗号停顿
 _PAUSE_SEPARATORS = re.compile(r"\s*[/／、;；|]\s*")
 
-# 孤立的韩文谚文子音/母音符号（如 N-기 / V-ㄴ다 里的 ㄴ、ㄹ），剔除以免读出字母名
+# 孤立的韩文谚文子音/母音符号（如 N-기 / V-ㄴ达 里的 ㄴ、ㄹ），剔除以免读出字母名
 _STANDALONE_JAMO = re.compile(r"[ㄱ-ㅎㅏ-ㅣ]+")
 
 # 仅保留韩文音节、空格与基本停顿标点
@@ -146,14 +156,95 @@ def _build_url_opener() -> urllib.request.OpenerDirector:
     return urllib.request.build_opener(urllib.request.ProxyHandler(proxies))
 
 
-def _google_tts_endpoints(cleaned_text: str, voice: str) -> list[tuple[str, dict[str, str], str]]:
-    """构造 Google TTS 候选请求端点列表。
+def synthesize_azure(
+    cleaned_text: str,
+    voice: str = "azure_ko_dragon_hd",
+    key: str = "",
+    region: str = "",
+    timeout: float = 8.0,
+) -> bytes:
+    """通过 Azure AI Speech REST API 合成高保真韩语音频字节流。"""
+    active_key = (key or os.environ.get("AZURE_SPEECH_KEY") or DEFAULT_AZURE_KEY).strip()
+    active_region = (region or os.environ.get("AZURE_SPEECH_REGION") or DEFAULT_AZURE_REGION).strip()
+    if not active_key:
+        raise RuntimeError("未配置 Azure Speech Key")
 
-    第一顺位采用 `https://www.google.com/translate_tts` 配合 `Host: translate.googleapis.com`：
-    许多代理分流规则（如常见 Clash 规则集）仍将 `translate.googleapis.com` / `translate.google.com`
-    标为 `DIRECT` 直连，导致国内环境握手超时；而 `www.google.com` 会正常走代理分流，
-    并由 Google Frontend (GFE) 根据 Host 头路由到翻译语音服务。
-    """
+    voice_name, rate = _AZURE_VOICE_SPECS.get(voice, ("ko-KR-SunHi:DragonHDLatestNeural", "1.0"))
+
+    speak = ET.Element(
+        "speak",
+        {
+            "version": "1.0",
+            "xmlns": "http://www.w3.org/2001/10/synthesis",
+            "xml:lang": "ko-KR",
+        },
+    )
+    voice_node = ET.SubElement(speak, "voice", {"name": voice_name})
+    prosody = ET.SubElement(voice_node, "prosody", {"rate": rate})
+    prosody.text = cleaned_text
+    ssml = ET.tostring(speak, encoding="utf-8")
+
+    req = urllib.request.Request(
+        f"https://{active_region}.tts.speech.microsoft.com/cognitiveservices/v1",
+        data=ssml,
+        headers={
+            "Ocp-Apim-Subscription-Key": active_key,
+            "Content-Type": "application/ssml+xml",
+            "X-Microsoft-OutputFormat": "audio-16khz-128kbitrate-mono-mp3",
+            "User-Agent": "TOPIKStudyHub/1.0",
+        },
+        method="POST",
+    )
+
+    opener = _build_url_opener()
+    with opener.open(req, timeout=timeout) as resp:
+        audio = resp.read()
+
+    if not audio or len(audio) < 256:
+        raise RuntimeError("Azure AI Speech 未返回有效音频")
+    return audio
+
+
+def probe_azure_tts(
+    key: str = "",
+    region: str = "",
+    voice: str = "azure_ko_dragon_hd",
+    timeout: float = 5.0,
+) -> tuple[bool, str]:
+    """实测 Azure AI Speech 的网络连通性与响应延迟。"""
+    active_key = (key or os.environ.get("AZURE_SPEECH_KEY") or DEFAULT_AZURE_KEY).strip()
+    active_region = (region or os.environ.get("AZURE_SPEECH_REGION") or DEFAULT_AZURE_REGION).strip()
+    if not active_key:
+        return False, "未配置 Azure Speech Key"
+
+    proxies = _get_effective_proxies()
+    proxy_url = proxies.get("https") or proxies.get("http") or ""
+    proxy_desc = f"系统代理 {proxy_url}" if proxy_url else "直连/TUN"
+
+    t0 = time.perf_counter()
+    try:
+        audio = synthesize_azure(
+            "안녕하세요", voice=voice, key=active_key, region=active_region, timeout=timeout
+        )
+        elapsed_ms = max(1, round((time.perf_counter() - t0) * 1000))
+        if audio and len(audio) > 256:
+            return (
+                True,
+                f"Azure 语音服务连接正常（延迟 {elapsed_ms} ms · {active_region} · {proxy_desc}）",
+            )
+        return False, "Azure 语音服务返回音频为空"
+    except Exception as exc:
+        reason = getattr(exc, "reason", None) or exc
+        err_msg = str(reason)
+        if "401" in err_msg or "Unauthorized" in err_msg:
+            err_msg = "密钥无效 (401 Unauthorized)"
+        elif "timed out" in err_msg.lower() or "10060" in err_msg:
+            err_msg = "连接超时"
+        return False, f"Azure 语音服务无法连接（{err_msg} · {proxy_desc}）"
+
+
+def _google_tts_endpoints(cleaned_text: str, voice: str) -> list[tuple[str, dict[str, str], str]]:
+    """构造 Google TTS 候选请求端点列表。"""
     query = urllib.parse.quote(cleaned_text)
     speed = "0.24" if voice == "google_ko_slow" else "1"
     params = f"ie=UTF-8&client=tw-ob&tl=ko&ttsspeed={speed}&q={query}"
@@ -176,13 +267,13 @@ def _google_tts_endpoints(cleaned_text: str, voice: str) -> list[tuple[str, dict
     ]
 
 
-def probe_google_tts(voice: str = DEFAULT_TTS_VOICE, timeout: float = 4.0) -> tuple[bool, str]:
+def probe_google_tts(voice: str = "google_ko", timeout: float = 4.0) -> tuple[bool, str]:
     """实测 Google 韩语发音服务的网络连通性与响应延迟。"""
     proxies = _get_effective_proxies()
     proxy_url = proxies.get("https") or proxies.get("http") or ""
     proxy_desc = f"系统代理 {proxy_url}" if proxy_url else "未检测到系统代理/直连"
 
-    opener = urllib.request.build_opener(urllib.request.ProxyHandler(proxies))
+    opener = _build_url_opener()
     last_err = "请求超时"
     for url, headers, node_label in _google_tts_endpoints("한국어", voice):
         req = urllib.request.Request(url, headers=headers)
@@ -192,7 +283,10 @@ def probe_google_tts(voice: str = DEFAULT_TTS_VOICE, timeout: float = 4.0) -> tu
                 data = resp.read()
             elapsed_ms = max(1, round((time.perf_counter() - t0) * 1000))
             if data and len(data) > 256:
-                return True, f"连接正常（延迟 {elapsed_ms} ms · {node_label} · {proxy_desc}）"
+                return (
+                    True,
+                    f"Google 语音服务连接正常（延迟 {elapsed_ms} ms · {node_label} · {proxy_desc}）",
+                )
             last_err = "返回音频为空"
         except Exception as exc:
             reason = getattr(exc, "reason", None) or exc
@@ -201,25 +295,172 @@ def probe_google_tts(voice: str = DEFAULT_TTS_VOICE, timeout: float = 4.0) -> tu
 
     if "timed out" in last_err.lower() or "10060" in last_err:
         last_err = "握手或连接超时"
-    return False, f"无法连接（{last_err} · {proxy_desc}）"
+    return False, f"Google 语音服务无法连接（{last_err} · {proxy_desc}）"
+
+
+def probe_tts_network(
+    voice: str = DEFAULT_TTS_VOICE,
+    azure_key: str = "",
+    azure_region: str = "",
+    timeout: float = 5.0,
+) -> tuple[bool, str]:
+    """根据所选语音模式自动探测对应的云端语音网络服务。"""
+    if voice.startswith("azure_"):
+        return probe_azure_tts(key=azure_key, region=azure_region, voice=voice, timeout=timeout)
+    return probe_google_tts(voice=voice, timeout=timeout)
 
 
 class TTSNetworkProbeWorker(QThread):
-    """后台检测 Google TTS 网络状态的线程。"""
+    """后台检测 TTS 云端网络状态的线程。"""
 
     probed = Signal(bool, str)
 
-    def __init__(self, voice: str = DEFAULT_TTS_VOICE, parent=None):
+    def __init__(
+        self,
+        voice: str = DEFAULT_TTS_VOICE,
+        azure_key: str = "",
+        azure_region: str = "",
+        parent=None,
+    ):
         super().__init__(parent)
         self.voice = voice or DEFAULT_TTS_VOICE
+        self.azure_key = azure_key
+        self.azure_region = azure_region
 
     def run(self):
-        ok, detail = probe_google_tts(self.voice, timeout=4.0)
+        ok, detail = probe_tts_network(
+            self.voice,
+            azure_key=self.azure_key,
+            azure_region=self.azure_region,
+            timeout=5.0,
+        )
         self.probed.emit(ok, detail)
 
 
+def count_uncached_words(words: list[str], voice: str = DEFAULT_TTS_VOICE) -> int:
+    """统计给定韩文单词列表中尚未生成有效本地缓存的词条数量。"""
+    uncached = 0
+    seen = set()
+    for raw in words:
+        cleaned = clean_korean_for_tts(raw)
+        if cleaned and cleaned not in seen:
+            seen.add(cleaned)
+            if not is_cached(cleaned, voice):
+                uncached += 1
+    return uncached
+
+
+class BatchTTSPreloadWorker(QThread):
+    """后台批量预下载词表发音音频并原子存入缓存。"""
+
+    progress = Signal(int, int, str)  # done_count, total_count, current_word
+    finished = Signal(int, int)  # downloaded_count, total_count
+    error = Signal(str)
+
+    def __init__(
+        self,
+        words: list[str],
+        voice: str = DEFAULT_TTS_VOICE,
+        azure_key: str = "",
+        azure_region: str = "",
+        delay_sec: float = 0.08,
+        parent=None,
+    ):
+        super().__init__(parent)
+        self.words = list(words)
+        self.voice = voice or DEFAULT_TTS_VOICE
+        self.azure_key = azure_key
+        self.azure_region = azure_region
+        self.delay_sec = max(0.02, delay_sec)
+        self._cancelled = False
+
+    def cancel(self):
+        self._cancelled = True
+
+    def run(self):
+        try:
+            TTS_DIR.mkdir(parents=True, exist_ok=True)
+        except OSError as exc:
+            self.error.emit(str(exc))
+            return
+
+        pending = []
+        seen = set()
+        for raw in self.words:
+            cleaned = clean_korean_for_tts(raw)
+            if cleaned and cleaned not in seen:
+                seen.add(cleaned)
+                if not is_cached(cleaned, self.voice):
+                    pending.append((raw, cleaned, cache_path_for(cleaned, self.voice)))
+
+        total = len(pending)
+        if total == 0:
+            self.finished.emit(0, 0)
+            return
+
+        downloaded = 0
+        for idx, (raw, cleaned, target_path) in enumerate(pending, 1):
+            if self._cancelled:
+                return
+
+            self.progress.emit(idx - 1, total, raw)
+
+            if is_cached(cleaned, self.voice):
+                downloaded += 1
+                continue
+
+            tmp_path = target_path.with_suffix(f".batch_{idx}.tmp")
+            try:
+                if self.voice.startswith("azure_"):
+                    audio = synthesize_azure(
+                        cleaned,
+                        voice=self.voice,
+                        key=self.azure_key,
+                        region=self.azure_region,
+                        timeout=7.0,
+                    )
+                    if audio and len(audio) > 256:
+                        tmp_path.write_bytes(audio)
+                        os.replace(tmp_path, target_path)
+                        downloaded += 1
+                else:
+                    opener = _build_url_opener()
+                    for url, headers, _ in _google_tts_endpoints(cleaned, self.voice):
+                        if self._cancelled:
+                            break
+                        req = urllib.request.Request(url, headers=headers)
+                        try:
+                            with opener.open(req, timeout=5.0) as resp:
+                                data = resp.read()
+                            if data and len(data) > 256:
+                                tmp_path.write_bytes(data)
+                                os.replace(tmp_path, target_path)
+                                downloaded += 1
+                                break
+                        except Exception:
+                            continue
+            except Exception:
+                pass
+            finally:
+                if tmp_path.exists():
+                    try:
+                        tmp_path.unlink()
+                    except OSError:
+                        pass
+
+            if self._cancelled:
+                return
+
+            self.progress.emit(idx, total, raw)
+            if self.delay_sec > 0:
+                time.sleep(self.delay_sec)
+
+        if not self._cancelled:
+            self.finished.emit(downloaded, total)
+
+
 class _TTSFetchWorker(QThread):
-    """后台拉取 Google TTS 韩语音频并原子写入本地缓存目录。"""
+    """后台拉取云端 TTS 韩语音频并原子写入本地缓存目录。"""
 
     completed = Signal(int, str, str, str, bool)  # request_id, cleaned_text, file_path, error, manual
 
@@ -229,6 +470,8 @@ class _TTSFetchWorker(QThread):
         cleaned_text: str,
         voice: str,
         target_path: Path,
+        azure_key: str = "",
+        azure_region: str = "",
         manual: bool = False,
     ):
         super().__init__()
@@ -236,6 +479,8 @@ class _TTSFetchWorker(QThread):
         self.cleaned_text = cleaned_text
         self.voice = voice or DEFAULT_TTS_VOICE
         self.target_path = Path(target_path)
+        self.azure_key = azure_key
+        self.azure_region = azure_region
         self.manual = bool(manual)
         self._cancelled = False
 
@@ -255,7 +500,12 @@ class _TTSFetchWorker(QThread):
 
         tmp_path = self.target_path.with_suffix(f".{self.request_id}.tmp")
         try:
-            ok = self._fetch_google_tts(tmp_path)
+            if self.voice.startswith("azure_"):
+                ok = self._fetch_azure_tts(tmp_path)
+                service_name = "Azure"
+            else:
+                ok = self._fetch_google_tts(tmp_path)
+                service_name = "Google"
 
             if self._cancelled:
                 self._cleanup_tmp(tmp_path)
@@ -277,7 +527,7 @@ class _TTSFetchWorker(QThread):
                 self.request_id,
                 self.cleaned_text,
                 "",
-                "Google 语音服务连接超时或未返回有效音频",
+                f"{service_name} 语音服务连接超时或未返回有效音频",
                 self.manual,
             )
         except Exception as exc:
@@ -286,6 +536,24 @@ class _TTSFetchWorker(QThread):
                 self.completed.emit(
                     self.request_id, self.cleaned_text, "", str(exc), self.manual
                 )
+
+    def _fetch_azure_tts(self, tmp_path: Path) -> bool:
+        if self._cancelled:
+            return False
+        try:
+            audio = synthesize_azure(
+                self.cleaned_text,
+                voice=self.voice,
+                key=self.azure_key,
+                region=self.azure_region,
+                timeout=6.0,
+            )
+            if audio and len(audio) > 256:
+                tmp_path.write_bytes(audio)
+                return True
+        except Exception:
+            self._cleanup_tmp(tmp_path)
+        return False
 
     def _fetch_google_tts(self, tmp_path: Path) -> bool:
         """从 Google Translate TTS 拉取韩语 MP3（支持标准语速与慢速跟读）。"""
@@ -315,7 +583,7 @@ class _TTSFetchWorker(QThread):
 
 
 class WordSpeaker(QObject):
-    """单词发音控制器：统一调度本地缓存播放、后台 Google TTS 拉取与系统离线语音兜底。"""
+    """单词发音控制器：统一调度本地缓存播放、后台云端 TTS 拉取与系统离线语音兜底。"""
 
     # level ("info" | "warning" | "danger"), message
     notice = Signal(str, str)
@@ -421,7 +689,21 @@ class WordSpeaker(QObject):
             if w.isRunning():
                 w.cancel()
 
-        worker = _TTSFetchWorker(req_id, cleaned, voice, target_path, manual=manual)
+        azure_key = ""
+        azure_region = ""
+        if voice.startswith("azure_"):
+            azure_key = self.database.get_azure_speech_key()
+            azure_region = self.database.get_azure_speech_region()
+
+        worker = _TTSFetchWorker(
+            req_id,
+            cleaned,
+            voice,
+            target_path,
+            azure_key=azure_key,
+            azure_region=azure_region,
+            manual=manual,
+        )
         self._workers.add(worker)
         worker.completed.connect(self._on_fetch_completed)
         worker.finished.connect(lambda w=worker: self._cleanup_worker(w))
@@ -444,15 +726,19 @@ class WordSpeaker(QObject):
             return
 
         # 联网合成失败：自动退回系统本地韩语语音（PRODUCT_SPEC 8.6 / 12.2 F3）
+        service_label = "Azure" if self.database.get_tts_voice().startswith("azure_") else "Google"
         ok_local = self._speak_local(cleaned, explicit_local=False)
         if manual or not self._offline_warned:
             self._offline_warned = True
             if ok_local:
-                self.notice.emit("warning", "当前无法连接 Google 语音服务，已切换为系统离线韩语发音")
+                self.notice.emit(
+                    "warning",
+                    f"当前无法连接 {service_label} 语音服务，已切换为系统离线韩语发音",
+                )
             else:
                 self.notice.emit(
                     "warning",
-                    "无法连接 Google 语音服务（可在设置页点击「检测网络状态」排查），且系统未安装离线韩语语音包",
+                    f"无法连接 {service_label} 语音服务（可在设置页排查），且系统未安装离线韩语语音包",
                 )
 
     def _ensure_local_tts(self) -> bool:

@@ -53,7 +53,7 @@ from PySide6.QtWidgets import (
     QWidget,
 )
 
-from core.config import SUBJECT_FOLDERS, normalize_path
+from core.config import MATERIAL_SUBJECTS, is_under_root, normalize_path
 from core.library import ScanWorker, delete_file, file_extension, pdf_page_count
 from core.snippets import IMAGE_EXTS
 from ui.components import (
@@ -219,7 +219,7 @@ class VaultView(QWidget):
 
         self.combo_subject = QComboBox()
         self.combo_subject.addItem("全部科目", "全部")
-        for s in SUBJECT_FOLDERS:
+        for s in MATERIAL_SUBJECTS:
             self.combo_subject.addItem(s, s)
         self.combo_subject.setMinimumWidth(104)
         self.combo_subject.currentIndexChanged.connect(self.apply_filter)
@@ -499,6 +499,8 @@ class VaultView(QWidget):
 
     def refresh(self):
         """设置页改了资料目录 / 数据被重新导入后调用（MainWindow 接的）。"""
+        self.shutdown()
+        self.reload()
         self.start_scan()
 
     # ==================================================================
@@ -513,12 +515,7 @@ class VaultView(QWidget):
             self._rows = self.database.library_snapshot()
         except Exception:
             return
-        root = self.root_dir
-        self._missing_dirs = (
-            [name for name in SUBJECT_FOLDERS if not os.path.isdir(os.path.join(root, name))]
-            if root
-            else []
-        )
+        self._missing_dirs = []
         self._refresh_tag_combo()
         self.apply_filter()
 
@@ -562,7 +559,7 @@ class VaultView(QWidget):
             return lambda row: (-(row["size"] or 0), row["name"].lower())
         if mode == "subject":
             return lambda row: (
-                SUBJECT_FOLDERS.index(row["subject"]) if row["subject"] in SUBJECT_FOLDERS else 9,
+                MATERIAL_SUBJECTS.index(row["subject"]) if row["subject"] in MATERIAL_SUBJECTS else 99,
                 row["name"].lower(),
             )
         return lambda row: row["name"].lower()
@@ -697,8 +694,7 @@ class VaultView(QWidget):
         if not root:
             self._show_empty(
                 "还没有设置资料目录",
-                "请到「设置与数据」里选择资料根目录——"
-                "它应当含有 写作 / 听力 / 阅读 / 单词 等子文件夹。",
+                "请到「设置与数据」里选择资料根目录，工具会自动递归扫描其中的课件与图片资料。",
                 glyph="alert",
             )
             return
@@ -707,20 +703,8 @@ class VaultView(QWidget):
             self._show_empty(
                 "找不到资料文件夹",
                 f"期望的位置：{root}\n"
-                "该目录下应有 写作 / 听力 / 阅读 / 单词 等子文件夹。"
                 "如果资料已经移动，请到「设置与数据」重新指定。",
                 glyph="alert",
-            )
-            return
-
-        if self._missing_dirs and not self._rows:
-            self._show_empty(
-                f"缺少子文件夹：{' / '.join(self._missing_dirs)}",
-                "在这些文件夹里放上资料后点「重建索引」即可。",
-                action_text="重建索引",
-                action_icon="refresh",
-                glyph="alert",
-                handler=self.start_scan,
             )
             return
 
@@ -747,8 +731,8 @@ class VaultView(QWidget):
 
         if not self._rows:
             self._show_empty(
-                "这个资料目录下还没有资料",
-                "把文件放进 写作 / 听力 / 阅读 / 单词 子文件夹，索引就会扫到它们。",
+                "这个资料目录下还没有课件或图片资料",
+                "把 PDF / Word / PPT / Markdown / 图片等课件放进该目录（支持多层子目录），索引就会扫到它们。",
                 action_text="重建索引",
                 action_icon="refresh",
                 handler=self.start_scan,
@@ -952,6 +936,16 @@ class VaultView(QWidget):
         """
         path = normalize_path(path)
         self.clear_filters()          # 会触发一次重建，所以 `_selected` 必须在它之后设
+        if self.root_dir and not is_under_root(path, self.root_dir):
+            self.banner.show_message(
+                "info",
+                f"「{os.path.basename(path)}」不在当前资料根目录下。",
+                action_text="在文件夹中显示",
+                action_icon="folder-open",
+            )
+            self._banner_action = lambda: reveal_in_folder(path)
+            self.reload()
+            return
         self._selected = path
         if self._row_for(path) is None:
             self._pending_locate = path   # 索引里还没有它，扫一轮，扫完由 _on_scan_done 补选中

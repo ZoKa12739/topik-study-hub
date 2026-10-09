@@ -42,7 +42,27 @@ from pathlib import Path
 
 from PySide6.QtCore import QThread, Signal
 
-from core.config import PROJECT_ROOT, SUBJECT_FOLDERS, normalize_path
+from core.config import OTHER_SUBJECT, PROJECT_ROOT, normalize_path, subject_of
+from core.snippets import IMAGE_EXTS
+
+# 资料库收录的文档课件与图片扩展名白名单（音视频、.tsv/.csv、压缩包等不进资料库）
+DOC_EXTS = frozenset(
+    {
+        ".pdf",
+        ".doc",
+        ".docx",
+        ".ppt",
+        ".pptx",
+        ".xls",
+        ".xlsx",
+        ".md",
+        ".txt",
+        ".html",
+        ".htm",
+        ".hwp",
+    }
+)
+MATERIAL_EXTS = DOC_EXTS | IMAGE_EXTS
 
 # 永远不进索引的目录名。前四个是工具/系统产生的，后两个是编辑器与回收站。
 SKIP_DIR_NAMES = frozenset(
@@ -71,8 +91,13 @@ def is_ignored_file(name):
     return name.startswith(".") or name.startswith("~$")
 
 
+def is_material_file(name):
+    """判断文件后缀是否属于资料库收录的课件或图片。"""
+    return file_extension(name) in MATERIAL_EXTS
+
+
 def scan_material(root, progress=None, should_cancel=None):
-    """遍历资料根目录下的科目文件夹。
+    """遍历资料根目录（支持多层结构），仅收录课件与图片并通过路径智能推断科目。
 
     返回 `(records, notes)`：
 
@@ -86,22 +111,21 @@ def scan_material(root, progress=None, should_cancel=None):
     """
     records = []
     notes = {"errors": [], "skipped": 0}
-    root = Path(root)
+    root_path = Path(root) if root else None
+    if not root_path or not root_path.is_dir():
+        return records, notes
+
+    root_str = normalize_path(root_path)
 
     def report():
         if progress:
             progress(len(records))
 
-    for subject in SUBJECT_FOLDERS:
-        directory = root / subject
-        if not directory.is_dir():
-            continue
-        _walk(directory, subject, records, notes, should_cancel, report)
-
+    _walk(root_str, root_str, records, notes, should_cancel, report)
     return records, notes
 
 
-def _walk(directory, subject, records, notes, should_cancel, report):
+def _walk(directory, root_str, records, notes, should_cancel, report):
     """深度优先。用 `os.scandir` 而不是 `os.walk`——`DirEntry` 自带 stat 缓存，
     同一个文件不会为了拿大小/时间再多跑一次系统调用。"""
     try:
@@ -120,15 +144,17 @@ def _walk(directory, subject, records, notes, should_cancel, report):
                     continue
                 if os.path.normcase(os.path.abspath(entry.path)) == _PROJECT_ROOT_KEY:
                     continue
-                _walk(entry.path, subject, records, notes, should_cancel, report)
+                _walk(entry.path, root_str, records, notes, should_cancel, report)
             elif entry.is_file(follow_symlinks=False):
-                if is_ignored_file(entry.name):
+                if is_ignored_file(entry.name) or not is_material_file(entry.name):
                     notes["skipped"] += 1
                     continue
                 stat = entry.stat()
+                norm_path = normalize_path(entry.path)
+                subject = subject_of(norm_path, root_str) or OTHER_SUBJECT
                 records.append(
                     {
-                        "path": normalize_path(entry.path),
+                        "path": norm_path,
                         "name": entry.name,
                         "subject": subject,
                         "ext": file_extension(entry.name),

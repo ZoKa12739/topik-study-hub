@@ -320,7 +320,11 @@ class LabelMotion:
 
     * **只挂叶子控件**。`QGraphicsOpacityEffect` 一旦挂到容器上，Qt 会把整块区域
       缓存成位图逐帧重画——440px 的卡片配 42px 韩语大字会直接掉帧，所以这里只对
-      单个 `QLabel` 用，且位移量很小。
+      单个 `QLabel` 用。
+    * **effect 播完就摘，不常驻**。常驻 effect 会让文字被离屏渲染：Windows 上
+      亚像素抗锯齿失效，静止状态的文字明显变浅发虚（过词大字已经被用户抓过一次）。
+      所以 effect 只在动画期间挂上去，`finished`（含被打断的 `stop()`）时摘掉，
+      静止时回到原生渲染。两个动画都停了才摘，避免半路"啪"地恢复原样。
     * **动画对象随宿主 View 存活**：`owner` 传入 View，effect 与 animation 都不被 GC。
     * **连发打断先归位**：从上一轮的静止点重开，坐标不累积。历史上
       `VocabView._animate_card_step` 动的是整张卡，连按 `1`/`2`/`3` 时
@@ -332,10 +336,22 @@ class LabelMotion:
     def __init__(self, owner, label):
         self._label = label
         self._rest_pos = QPoint()
+        # effect 由 label 持作父对象保证不被 GC，但构造时不安装——见 _release_effect
         self._effect = QGraphicsOpacityEffect(label)
-        label.setGraphicsEffect(self._effect)
         self._opacity_anim = QPropertyAnimation(self._effect, b"opacity", owner)
         self._slide_anim = QPropertyAnimation(label, b"pos", owner)
+        # stop() 同样会发 finished，所以「被打断」与「自然播完」两条路径都覆盖
+        self._opacity_anim.finished.connect(self._release_effect)
+        self._slide_anim.finished.connect(self._release_effect)
+
+    def _release_effect(self, *_):
+        """两组动画都停下后摘掉 effect，让静止文字回到原生渲染。"""
+        if (
+            self._opacity_anim.state() != QPropertyAnimation.Running
+            and self._slide_anim.state() != QPropertyAnimation.Running
+        ):
+            self._effect.setOpacity(1.0)
+            self._label.setGraphicsEffect(None)
 
     def play(self, dx=0, dy=0, duration=110):
         """从 `(dx, dy)` 偏移处淡入到静止位；`dx`/`dy` 为 0 时只做淡入。"""
@@ -356,6 +372,8 @@ class LabelMotion:
 
         start = QPoint(self._rest_pos.x() + dx, self._rest_pos.y() + dy)
         label.move(start)
+        # 这一刻才挂 effect：摘挂之间没有重绘，不会闪
+        label.setGraphicsEffect(self._effect)
         self._effect.setOpacity(0.0)
 
         self._opacity_anim.setDuration(duration)
@@ -370,8 +388,8 @@ class LabelMotion:
             self._slide_anim.setEndValue(self._rest_pos)
             self._slide_anim.setEasingCurve(QEasingCurve.OutCubic)
             self._slide_anim.start()
-        else:
-            self._slide_anim.stop()
+        # dx/dy 为 0 时无需碰 slide_anim：上面已保证它不在运行，
+        # 且它的 finished 会去摘 effect，不能在这里多余地 stop()
 
 
 def make_copyable(label):

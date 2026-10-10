@@ -26,7 +26,7 @@ pip install -r requirements.txt
 python main.py
 ```
 
-Windows 上也可以双击 `Start_Study_Hub.bat`（内部是 `pythonw main.py`，不弹控制台）。
+不想看到控制台窗口的话，用 `pythonw main.py` 启动（效果与原 `Start_Study_Hub.bat` 一致）。
 
 ### 环境要求
 

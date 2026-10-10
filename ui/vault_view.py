@@ -159,6 +159,7 @@ class VaultView(QWidget):
         self._pending_locate = None   # 「在资料库中定位」的目标，扫描完成后要选中它
         self._empty_action = None
         self._banner_action = None
+        self._root_cache = None   # root_dir 的查询结果缓存；reload() 时失效
 
         self.init_ui()
         self.reload()
@@ -170,11 +171,17 @@ class VaultView(QWidget):
 
         原实现用"向上三级"当资料根，项目一移动就指向错误目录——实测本机资料已在
         `课程资料/` 之下又迁进一层，而推导结果停在 `课程资料/`。见 PRODUCT_SPEC D10。
+
+        **值按实例缓存**：`_relative_dir()` 每渲染一行都要它，不缓存就是每行一次
+        sqlite 往返（实测 ~770 行的列表 == ~2 300 次查询、约 0.28 秒）。
+        设置页改了路径 → `refresh()` → `reload()`，缓存在那里失效重读。
         """
-        try:
-            return self.database.get_material_root()
-        except Exception:
-            return ""
+        if self._root_cache is None:
+            try:
+                self._root_cache = self.database.get_material_root()
+            except Exception:
+                self._root_cache = ""
+        return self._root_cache
 
     # ==================================================================
     # 布局
@@ -511,6 +518,8 @@ class VaultView(QWidget):
         """重读全量索引并重建列表。`keep` 是要保住的选中项 path。"""
         if keep is not None:
             self._selected = keep
+        # 资料根可能已被设置页改掉，缓存先失效再重读
+        self._root_cache = None
         try:
             self._rows = self.database.library_snapshot()
         except Exception:

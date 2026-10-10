@@ -346,40 +346,52 @@ class MainWindow(QMainWindow):
         from ui.vault_view import VaultView
         from ui.vocab_view import VocabView
 
-        # 保留强引用：closeEvent 等地方按名字取用，不再依赖"第 2 个是影子跟读"的隐式约定
+        # 懒装载登记表：索引 → 构造工厂。**启动只建 P0 一页**，其余首次导航到时才建。
+        # 实测（2026-10-10，本机数据规模）：六个视图全建 = ~1.85 s，其中 P0 只占 21 ms，
+        # 其余五页（Shadowing 697 / Vault 533 / Settings 376 / Vocab 161 / Snippets ~40 ms）
+        # 全耗在用户第一眼根本不看的内容上——规格 §9.1 的"冷启动 ≤ 3 秒"就是被它们吃掉的。
+        self._page_factories = {
+            1: lambda: VocabView(self.database),
+            2: lambda: ShadowingView(self.database),
+            3: lambda: VaultView(self.database),
+            4: lambda: SnippetsView(self.database),
+            self.SETTINGS_INDEX: lambda: SettingsView(self.database),
+        }
+        # 索引 → 属性名。未构造前属性为 None；closeEvent / refresh_* 一律判空
+        self._page_attrs = {
+            1: "vocab_view",
+            2: "shadowing_view",
+            3: "vault_view",
+            4: "snippets_view",
+            self.SETTINGS_INDEX: "settings_view",
+        }
+        # P0 是落地页，21 ms，随窗口一起建
         self.planner_view = PlannerView(self.database)
-        self.vocab_view = VocabView(self.database)
-        self.shadowing_view = ShadowingView(self.database)
-        self.vault_view = VaultView(self.database)
-        self.snippets_view = SnippetsView(self.database)
-        self.settings_view = SettingsView(self.database)
+        self.vocab_view = None
+        self.shadowing_view = None
+        self.vault_view = None
+        self.snippets_view = None
+        self.settings_view = None
 
-        pages = [
-            self.planner_view,
-            self.vocab_view,
-            self.shadowing_view,
-            self.vault_view,
-            self.snippets_view,
-        ]
+        # 占位页撑住 QStackedWidget 的索引：0~4 是导航页，最后是设置页。
+        # 索引是侧边栏 currentRowChanged 直接映射的隐式契约，懒装载不改变它。
+        self._placeholders = {}
         icon_names = ("calendar", "book", "headphones", "folder", "scissors")
-        for title, widget, icon_name in zip(self.NAV_PAGES, pages, icon_names):
+        for index, (title, icon_name) in enumerate(zip(self.NAV_PAGES, icon_names)):
             item = QListWidgetItem(nav_icon(icon_name), title)
             # 行高 32px，保持紧凑舒适的导航间距
             item.setSizeHint(QSize(0, 32))
             self.sidebar.addItem(item)
-            self.stacked_widget.addWidget(widget)
+            self.stacked_widget.addWidget(
+                self.planner_view if index == 0 else self._make_placeholder(index)
+            )
 
-        # P5 设置页：不在导航列表里，固定为最后一页
-        self.stacked_widget.addWidget(self.settings_view)
-        assert self.stacked_widget.indexOf(self.settings_view) == self.SETTINGS_INDEX
-
-        # P3 ↔ P4 的双向联动（`PRODUCT_SPEC` 4.4 / 4.5 的页面关系）：
-        #   资料库双击一张图片 → 碎片页选中它；碎片页「在资料库中定位」→ 资料库选中来源。
-        # 两边都只发信号、不直接引用对方，跳页由组合根决定。
-        self.vault_view.open_in_snippets.connect(self._show_snippet)
-        self.snippets_view.reveal_in_vault.connect(self._show_vault)
-        # 资料库扫完一轮 → 碎片页重读清单（它只读索引，自己不扫目录）
-        self.vault_view.index_updated.connect(self.snippets_view.refresh)
+        # P5 设置页：不在导航列表里，固定为最后一页（先放占位页，首次 open_settings 换上真身）
+        self.stacked_widget.addWidget(self._make_placeholder(self.SETTINGS_INDEX))
+        assert (
+            self.stacked_widget.indexOf(self._placeholders[self.SETTINGS_INDEX])
+            == self.SETTINGS_INDEX
+        )
 
         # P0 的两条出口（4.1 的流程 B、5.3 的可点片段）：都是"跳到产生这份记录的地方"。
         # 「继续上次」的音频一路回到 P2 的原列表原曲目原位置——那一步是 P2 自己在构造时
@@ -388,12 +400,66 @@ class MainWindow(QMainWindow):
         self.planner_view.open_shadowing.connect(self._show_shadowing)
         self.planner_view.open_vocab.connect(self._show_vocab)
 
-        # 资料目录 / 脚本路径变更 → 让依赖它们的页面重扫
-        self.settings_view.paths_changed.connect(self._on_paths_changed)
-        # 音频设备变更 → 让 P2 和 P1 把新设备装到播放器/录音链上（它自己不会跟随系统默认）
-        self.settings_view.audio_devices_changed.connect(self.shadowing_view.refresh_devices)
-        self.settings_view.audio_devices_changed.connect(self.vocab_view.refresh_audio_device)
-        self.settings_view.data_reloaded.connect(self.refresh_all)
+        # 其余页的信号在 _wire_page 里接——它们构造得晚，且只接组合根的方法，
+        # 不依赖对端是否已存在（见 _wire_page 的注释）。
+
+    def _make_placeholder(self, index):
+        """懒装载占位页：样式与页面一致（#panePage 透明底），只是空的。
+
+        用"占位 + 就地替换"而不是等用到再 addWidget：addWidget 追加会把设置页
+        推离 SETTINGS_INDEX=5，而那个索引是导航映射的契约。
+        """
+        page = QWidget()
+        page.setObjectName("panePage")
+        page.setAttribute(Qt.WidgetAttribute.WA_StyledBackground, True)
+        self._placeholders[index] = page
+        return page
+
+    def _ensure_page(self, index):
+        """按索引取页面；没构造过就地构造，并把占位页换成真身。
+
+        跳转、flush、refresh、close 一律经这里取页——直接摸属性会撞 None。
+        首次进入某页会有一次该页的构造耗时（P2 ~0.7 s / P3 ~0.3 s），
+        这是把启动成本改成"用到才付"之后的结果，不是回归。
+        """
+        attr = self._page_attrs.get(index)
+        if attr is None:
+            # P0 不在登记表里：它随窗口一起构造，永远在场
+            return self.planner_view
+        view = getattr(self, attr)
+        if view is not None:
+            return view
+        view = self._page_factories[index]()
+        placeholder = self._placeholders.pop(index, None)
+        if placeholder is not None:
+            # 先 remove 再 insert 回原索引：该页此前从未显示过，不可能是当前页，
+            # 换页不改变其余页的索引
+            self.stacked_widget.removeWidget(placeholder)
+            self.stacked_widget.insertWidget(index, view)
+            placeholder.deleteLater()
+        self._wire_page(index, view)
+        setattr(self, attr, view)
+        return view
+
+    def _wire_page(self, index, view):
+        """页面构造后接信号。**一律接组合根的方法**，不在视图之间直连——
+        对端可能晚一步才构造，经根方法读当前属性才不依赖构造顺序。"""
+        if index == 3:      # VaultView
+            # P3 ↔ P4 的双向联动（`PRODUCT_SPEC` 4.4 / 4.5 的页面关系）：
+            #   资料库双击一张图片 → 碎片页选中它；碎片页「在资料库中定位」→ 资料库选中来源。
+            # 两边都发信号、不直接引用对方，跳页由组合根决定。
+            view.open_in_snippets.connect(self._show_snippet)
+            # 资料库扫完一轮 → 碎片页重读清单（它只读索引，自己不扫目录）
+            view.index_updated.connect(self._on_vault_index_updated)
+        elif index == 4:    # SnippetsView
+            view.reveal_in_vault.connect(self._show_vault)
+        elif index == self.SETTINGS_INDEX:  # SettingsView
+            # 资料目录 / 脚本路径变更 → 让依赖它们的页面重扫
+            view.paths_changed.connect(self._on_paths_changed)
+            # 音频设备变更 → 让 P2 和 P1 把新设备装到播放器/录音链上（它自己不会跟随系统默认）
+            view.audio_devices_changed.connect(self._on_audio_devices_changed)
+            # 数据被重新导入 → 各页重读
+            view.data_reloaded.connect(self.refresh_all)
 
     def _setup_shortcuts(self):
         # PRODUCT_SPEC 2.6：Ctrl+1~5 切模块，Ctrl+, 打开设置
@@ -408,12 +474,16 @@ class MainWindow(QMainWindow):
     def _on_nav_changed(self, row):
         if row < 0:
             return
+        # 首次进入某页才构造它（懒装载），再切过去
+        self._ensure_page(row)
         self.stacked_widget.setCurrentIndex(row)
         self.btn_settings.setChecked(False)
 
     def open_settings(self, checked=None):
         # checked 参数：QPushButton.clicked 会带一个 bool，这里忽略它
         self.btn_settings.setChecked(True)
+        # 设置页懒装载：第一次打开才构造
+        self._ensure_page(self.SETTINGS_INDEX)
         # 清空导航选中（-1 会被 _on_nav_changed 忽略），再切到设置页
         self.sidebar.setCurrentRow(-1)
         self.stacked_widget.setCurrentIndex(self.SETTINGS_INDEX)
@@ -421,32 +491,56 @@ class MainWindow(QMainWindow):
 
     def _show_snippet(self, path):
         self._goto_page(self.NAV_PAGES.index("知识碎片"))
-        self.snippets_view.select_path(path)
+        self._ensure_page(self.NAV_PAGES.index("知识碎片")).select_path(path)
 
     def _show_shadowing(self):
         self._goto_page(self.NAV_PAGES.index("影子跟读"))
 
     def _show_vocab(self, list_id):
-        self._goto_page(self.NAV_PAGES.index("智能单词仓"))
+        index = self.NAV_PAGES.index("智能单词仓")
+        self._goto_page(index)
         if list_id and list_id > 0:
-            self.vocab_view.select_list(list_id)
+            self._ensure_page(index).select_list(list_id)
 
     def _show_vault(self, path):
-        self._goto_page(self.NAV_PAGES.index("TOPIK 资料库"))
+        index = self.NAV_PAGES.index("TOPIK 资料库")
+        self._goto_page(index)
         if path:
-            self.vault_view.locate(path)
+            self._ensure_page(index).locate(path)
+
+    def _on_vault_index_updated(self):
+        # 资料库扫完一轮 → 碎片页重读清单（P4 只读索引，自己不扫目录）
+        if self.snippets_view is not None:
+            self.snippets_view.refresh()
+
+    def _on_audio_devices_changed(self):
+        # P2 和 P1 把新设备装到播放器/录音链上（它们自己不会跟随系统默认）
+        if self.shadowing_view is not None:
+            self.shadowing_view.refresh_devices()
+        if self.vocab_view is not None:
+            self.vocab_view.refresh_audio_device()
 
     def _on_paths_changed(self):
-        self.vault_view.refresh()
-        self.snippets_view.refresh()
+        # 资料目录变更 → 重扫依赖它的页面。没构造过的页不刷：
+        # 它下次构造时读的就是新值，白刷一遍只是把成本提前付掉
+        if self.vault_view is not None:
+            self.vault_view.refresh()
+        if self.snippets_view is not None:
+            self.snippets_view.refresh()
 
     def refresh_all(self):
+        # 数据被重新导入后各页重读。没构造过的页同理：构造时自然读到新数据
         self.planner_view.refresh()
-        self.vocab_view.refresh()
-        self.shadowing_view.refresh()
-        self.vault_view.refresh()
-        self.snippets_view.refresh()
-        self.settings_view.refresh()
+        if self.vocab_view is not None:
+            self.vocab_view.refresh()
+        if self.shadowing_view is not None:
+            self.shadowing_view.refresh()
+        if self.vault_view is not None:
+            self.vault_view.refresh()
+        if self.snippets_view is not None:
+            self.snippets_view.refresh()
+        if self.settings_view is not None:
+            self.settings_view.refresh()
 
     def focus_today_input(self):
         """P6 向导完成后把焦点交给今日任务输入框（PRODUCT_SPEC 4.7）。"""
@@ -853,15 +947,24 @@ class MainWindow(QMainWindow):
         #   * 影子跟读的跟读时长、播放位置、AB 点，以及还在防抖窗口里的原文/译文
         #   * P1 正在编辑、还在 1.5 秒防抖窗口里的笔记
         #   * P4 正在编辑的碎片说明与标题（同一条理由，另一处 1.5 秒防抖）
-        self.shadowing_view.flush_study_session()
-        self.vocab_view.flush_pending()
-        self.snippets_view.flush_pending()
+        # 懒装载的页没构造过 = 从未被打开 = 没有什么待冲刷、没有线程在跑，直接跳过
+        if self.shadowing_view is not None:
+            self.shadowing_view.flush_study_session()
+        if self.vocab_view is not None:
+            self.vocab_view.flush_pending()
+        if self.snippets_view is not None:
+            self.snippets_view.flush_pending()
         # 后台线程要收干净：P1/P5 的 TTS 合成、P3 的目录扫描、P2 的 ffmpeg 转换、P4 的缩略图解码。
         # QThread 还在跑就把窗口拆掉，Qt 会打印 "Destroyed while thread is still running"
-        self.vocab_view.shutdown()
-        self.settings_view.shutdown()
-        self.vault_view.shutdown()
-        self.shadowing_view.shutdown()
-        self.snippets_view.shutdown()
+        if self.vocab_view is not None:
+            self.vocab_view.shutdown()
+        if self.settings_view is not None:
+            self.settings_view.shutdown()
+        if self.vault_view is not None:
+            self.vault_view.shutdown()
+        if self.shadowing_view is not None:
+            self.shadowing_view.shutdown()
+        if self.snippets_view is not None:
+            self.snippets_view.shutdown()
         self.database.close()
         super().closeEvent(event)

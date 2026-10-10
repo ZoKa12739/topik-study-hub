@@ -33,6 +33,7 @@ from datetime import datetime
 from PySide6.QtCore import QSize, Qt, QTimer, QUrl, Signal
 from PySide6.QtGui import QBrush, QColor, QDesktopServices, QIntValidator
 from PySide6.QtWidgets import (
+    QAbstractItemView,
     QApplication,
     QComboBox,
     QFileDialog,
@@ -153,7 +154,8 @@ class VaultView(QWidget):
 
         self._rows = []          # library_snapshot 的全量
         self._shown = []         # 当前筛选+排序后的结果
-        self._selected = None    # 选中项的 path（**不是索引**：列表会重建，行号会变）
+        self._selected = None    # 详情面板当前显示的 path（单选项；多选时为 None）
+        self._selected_paths = []   # 多选：选中项 path 的有序列表，_render_list 重建后照样认得
         self._missing_dirs = []
         self._scan_worker = None
         self._pending_locate = None   # 「在资料库中定位」的目标，扫描完成后要选中它
@@ -255,6 +257,18 @@ class VaultView(QWidget):
         self.btn_refresh.setToolTip("重新比对资料目录；只更新有变化的文件")
         self.btn_refresh.clicked.connect(self.start_scan)
         bar.addWidget(self.btn_refresh)
+
+        # 失效行是"东西还在册子上、文件不在原位"的那些。它们不会自己消失，
+        # 也没有单条清理的意义——用户要的是一次清干净（4.4 状态表的收尾动作）。
+        self.btn_clear_missing = QPushButton("清除失效")
+        self.btn_clear_missing.setObjectName("iconButton")
+        self.btn_clear_missing.setIcon(icon("trash"))
+        self.btn_clear_missing.setToolTip(
+            "把「文件已不在原位置」的索引行全部清掉；标签与阅读进度会继续保留在数据库里，"
+            "文件找回来时自动重新关联"
+        )
+        self.btn_clear_missing.clicked.connect(self.clear_missing_rows)
+        bar.addWidget(self.btn_clear_missing)
         return frame
 
     def _build_progress_row(self):
@@ -279,6 +293,9 @@ class VaultView(QWidget):
     def _build_list_area(self):
         self.list_widget = QListWidget()
         self.list_widget.setObjectName("vaultList")
+        # 多选：资料要清就是一批（"换目录之后全标红了"不可能一条条点）。
+        # Ctrl/Shift 由 ExtendedSelection 提供，详情面板在多选时换成批量态。
+        self.list_widget.setSelectionMode(QAbstractItemView.ExtendedSelection)
         self._list_delegate = PillListDelegate(self.list_widget)
         self.list_widget.setItemDelegate(self._list_delegate)
         self.list_widget.itemSelectionChanged.connect(self._on_selection_changed)
@@ -418,6 +435,18 @@ class VaultView(QWidget):
         self.btn_relocate.setToolTip("文件被移动或改名后，把索引与标签接到新位置")
         self.btn_relocate.clicked.connect(lambda: self.relocate(self._selected))
         second.addWidget(self.btn_relocate)
+
+        # 多选时唯一可用的清理入口：单条的「删除文件」要回收站、要逐条确认，
+        # 批量做这两件事都不合适，所以这里只清索引行，磁盘文件一律不动。
+        self.btn_remove_selected = QPushButton("从索引中移除")
+        self.btn_remove_selected.setObjectName("iconButton")
+        self.btn_remove_selected.setIcon(icon("trash"))
+        self.btn_remove_selected.setToolTip(
+            "把选中项的索引行清掉；磁盘文件不动，标签与阅读进度继续留在数据库里"
+        )
+        self.btn_remove_selected.clicked.connect(self.remove_selected_rows)
+        self.btn_remove_selected.hide()
+        second.addWidget(self.btn_remove_selected)
         second.addStretch()
         box.addLayout(second)
 
@@ -471,7 +500,7 @@ class VaultView(QWidget):
         if self._pending_locate:
             # 「在资料库中定位」指向的文件刚才还不在索引里（新加的、或路径变过）。
             # `_render_list` 找不到它就会把选中项清空，所以这里补回来再重建一次。
-            self._selected = self._pending_locate
+            self._selected_paths = [self._pending_locate]
             self._pending_locate = None
         self.reload()
         self._report_scan(summary, notes)
@@ -479,19 +508,36 @@ class VaultView(QWidget):
 
     def _report_scan(self, summary, notes):
         errors = notes.get("errors") or []
-        if errors:
-            self.banner.show_message(
-                "warning",
-                f"{len(errors)} 个文件无法读取（其余已完成索引）：{errors[0]}",
-            )
-        elif summary["added"] or summary["updated"]:
+        if summary["relocated"] or summary["merged"]:
             # 没变化时**不提示**——D6-C 的增量扫描是日常启动路径，
-            # 每次都弹一条"索引完成"会变成一个没人看的噪声源
-            extra = f" · 标记缺失 {summary['missing']}" if summary["missing"] else ""
+            # 每次都弹一条"索引完成"会变成一个没人看的噪声源；
+            # 但"自动归位"必须说：它解释了标签为什么跟着一份换了位置的文件回来了
+            bits = [f"新增 {summary['added']}", f"更新 {summary['updated']}"]
+            if summary["relocated"]:
+                bits.append(f"自动归位 {summary['relocated']}")
+            if summary["merged"]:
+                bits.append(f"合并重复 {summary['merged']}")
+            show_toast(self.window(), "索引完成：" + " · ".join(bits))
+        elif summary["added"] or summary["updated"]:
             show_toast(
                 self.window(),
-                f"索引完成：新增 {summary['added']} · 更新 {summary['updated']}{extra}",
+                f"索引完成：新增 {summary['added']} · 更新 {summary['updated']}"
+                + (f" · 标记缺失 {summary['missing']}" if summary["missing"] else ""),
             )
+
+        # 同一个文件在树里有多个同名同大小的拷贝时，自动归位不敢下结论——
+        # 明说还有几份要用户自己指定，别让它看起来像是"工具没干活"
+        message = ""
+        if errors:
+            message = f"{len(errors)} 个文件无法读取（其余已完成索引）：{errors[0]}"
+        if summary["ambiguous"]:
+            ambiguous_text = (
+                f"{summary['ambiguous']} 份资料被移动过，但树里有多个同名同大小的文件，"
+                "无法自动归位；选中它用「重新定位」指定新位置，标签与阅读进度会跟着走。"
+            )
+            message = f"{message}\n{ambiguous_text}" if message else ambiguous_text
+        if message:
+            self.banner.show_message("warning", message)
 
     def shutdown(self):
         """窗口关闭时收线程。
@@ -516,8 +562,9 @@ class VaultView(QWidget):
 
     def reload(self, keep=None):
         """重读全量索引并重建列表。`keep` 是要保住的选中项 path。"""
-        if keep is not None:
-            self._selected = keep
+        if keep:
+            # `keep` 可以是单条 path，也可以是一批（P4 定位、重新定位后各用一种）
+            self._selected_paths = [keep] if isinstance(keep, str) else list(keep)
         # 资料根可能已被设置页改掉，缓存先失效再重读
         self._root_cache = None
         try:
@@ -623,7 +670,9 @@ class VaultView(QWidget):
         item.setData(PillListDelegate.PILL_ROLE, pills)
 
     def _render_list(self):
-        keep = self._selected
+        # 选中态**跨重建保留**：列表每次筛选、刷新、扫描都会整页重建，
+        # 而多选下来的那十几条正等着被一次清掉，重建即清空等于白选
+        wanted = set(self._selected_paths)
         self.list_widget.blockSignals(True)   # 重建期间的选中变化不该去刷详情面板
         self.list_widget.clear()
         for row in self._shown[:MAX_ROWS]:
@@ -639,30 +688,38 @@ class VaultView(QWidget):
             item.setFont(font)
             self._populate_vault_item(item, row)
             self.list_widget.addItem(item)
+            if row["path"] in wanted:
+                # 必须先 addItem 再 setSelected：给还没进模型的 item 设选中态，
+                # 等它被加进视图时那一笔会被丢掉，于是多选永远活不过一次重建
+                item.setSelected(True)
         self.list_widget.blockSignals(False)
 
-        # 选中态按 path 找回：列表每次筛选都重建，行号会变
-        if keep:
-            for index in range(self.list_widget.count()):
-                if self.list_widget.item(index).data(Qt.UserRole) == keep:
-                    self.list_widget.setCurrentRow(index)   # 信号活着 → 详情面板同步
-                    break
-            else:
-                self._select(None)
-        else:
-            self._select(None)
+        # 选中态按 path 认出之后，详情面板重新对齐（含"一份都没选中"的复位）
+        self._on_selection_changed()
 
     def _update_index_label(self):
+        missing = self._missing_count()
+        # 失效行数直接写在按钮上：这一页"该清什么"因此不用先点进去才知道
+        self.btn_clear_missing.setText(f"清除失效（{missing}）" if missing else "清除失效")
+        self.btn_clear_missing.setEnabled(missing > 0)
         if self._scan_worker is not None:
             return   # 扫描期间由 _on_scan_progress 独占这一行
         stamp = self.database.last_indexed_at()
         bits = [f"上次索引 {stamp[:16].replace('T', ' ')}" if stamp else "尚未建立索引"]
         bits.append(f"共 {len(self._rows)} 份资料")
+        if missing:
+            bits.append(f"失效 {missing} 条")
+        if self._selected_paths:
+            bits.append(f"已选 {len(self._selected_paths)} 项")
         if self._filter_summary() != "无筛选":
             bits.append(f"当前筛选：{self._filter_summary()} · 匹配 {len(self._shown)} 条")
         if len(self._shown) > MAX_ROWS:
             bits.append(f"列表只显示前 {MAX_ROWS} 条，缩小范围可看其余")
         self.lbl_index.setText(" · ".join(bits))
+
+    def _missing_count(self):
+        """索引里「文件已不在原位置」的行数——「清除失效」的度量，也是按钮的启用条件。"""
+        return sum(1 for row in self._rows if row["missing"])
 
     def _filter_summary(self):
         bits = []
@@ -779,13 +836,26 @@ class VaultView(QWidget):
         return None
 
     def _on_selection_changed(self):
+        """选中态变化。单选走原来的详情面板，多选换成批量态——
+        逐份资料的编辑动作（打开、打标签、改页码）在多选时没有意义，
+        留着只会让人点出一个"什么都没发生"。
+        """
         items = self.list_widget.selectedItems()
-        path = items[0].data(Qt.UserRole) if items else None
+        self._selected_paths = [item.data(Qt.UserRole) for item in items]
+        current = self.list_widget.currentItem()
+        path = current.data(Qt.UserRole) if current is not None else None
+        if path is None or path not in self._selected_paths:
+            path = self._selected_paths[0] if self._selected_paths else None
+        if len(self._selected_paths) > 1:
+            self._select_batch(len(self._selected_paths))
+            return
         self._select(self._row_for(path) if path else None)
 
     def _select(self, row):
         self._selected = row["path"] if row else None
         enabled = row is not None
+        self.btn_relocate.setVisible(True)
+        self.btn_remove_selected.setVisible(False)
         for button in (self.btn_open, self.btn_reveal, self.btn_relocate, self.btn_add_tag):
             button.setEnabled(enabled)
 
@@ -836,6 +906,30 @@ class VaultView(QWidget):
             self.lbl_page_hint.setText("外部程序打开 PDF 时无法自动跳页，页码由你自己记。")
         self._render_tags(row["tags"])
         self._render_tag_pool(row["tags"])
+
+    def _select_batch(self, count):
+        """多选时的详情面板：一个批量态 + 一个清理入口，别的都收起来。"""
+        self._selected = None
+        for button in (self.btn_open, self.btn_reveal, self.btn_relocate, self.btn_add_tag):
+            button.setEnabled(False)
+        self.btn_relocate.setVisible(False)
+        self.btn_remove_selected.setText(f"从索引中移除（{count}）")
+        self.btn_remove_selected.setVisible(True)
+
+        self.lbl_detail_name.setText(f"已选 {count} 份资料")
+        self.lbl_detail_meta.setText("多选时不显示单份资料的信息")
+        self.lbl_detail_path.setText(
+            "可一次性清掉这些索引行；标签、阅读进度与碎片说明继续留在数据库里，"
+            "文件找回来时会自动重新关联。"
+        )
+        self.lbl_usage.clear()
+        self.page_input.clear()
+        self.page_input.setEnabled(False)
+        self.lbl_pages.clear()
+        self.lbl_page_hint.clear()
+        self.tag_input.clear()
+        self._render_tags([])
+        self._render_tag_pool([])
 
     def _probe_page_count(self, row, is_pdf):
         """选中 PDF 时补一次总页数。**按需**做，不在索引时批量跑——
@@ -944,7 +1038,7 @@ class VaultView(QWidget):
         先清掉筛选：目标很可能正被当前筛选挡在外面，切过来却什么都看不到，比不切还困惑。
         """
         path = normalize_path(path)
-        self.clear_filters()          # 会触发一次重建，所以 `_selected` 必须在它之后设
+        self.clear_filters()          # 会触发一次重建，所以 `_selected_paths` 必须在它之后设
         if self.root_dir and not is_under_root(path, self.root_dir):
             self.banner.show_message(
                 "info",
@@ -955,7 +1049,7 @@ class VaultView(QWidget):
             self._banner_action = lambda: reveal_in_folder(path)
             self.reload()
             return
-        self._selected = path
+        self._selected_paths = [path]
         if self._row_for(path) is None:
             self._pending_locate = path   # 索引里还没有它，扫一轮，扫完由 _on_scan_done 补选中
             self.start_scan()
@@ -972,8 +1066,17 @@ class VaultView(QWidget):
         item = self.list_widget.itemAt(position)
         if item is None:
             return
-        path = item.data(Qt.UserRole)
+        selected = self.list_widget.selectedItems()
         menu = QMenu(self)
+        if len(selected) > 1:
+            # 多选：右键某一项的手势等于"对选中的一整批做"。
+            # 删文件不在批量能力里（要送回收站、要逐条看清是哪一份），只给清索引。
+            action = menu.addAction(icon("trash"), f"从索引中移除（{len(selected)} 项）")
+            action.setToolTip("只清理索引行，磁盘文件不动")
+            action.triggered.connect(self.remove_selected_rows)
+            menu.exec(self.list_widget.viewport().mapToGlobal(position))
+            return
+        path = item.data(Qt.UserRole)
         action = menu.addAction(icon("file-text"), "打开")
         action.triggered.connect(lambda: self.open_path(path))
         action = menu.addAction(icon("folder-open"), "在文件夹中显示")
@@ -1029,12 +1132,73 @@ class VaultView(QWidget):
                 return
 
         self.database.remove_material_row(path)
-        if self._selected == path:
-            self._selected = None
+        self._selected_paths = [p for p in self._selected_paths if p != path]
         self.reload()
         # 碎片页那边这一行也该隐去（它只读索引，等不到下一次扫描就不会更新）
         self.index_updated.emit()
         show_toast(self.window(), "已移到回收站" if exists else "已从索引中移除")
+
+    def remove_selected_rows(self):
+        """把选中项的索引行一次清掉（多选时唯一的清理入口）。
+
+        **只删第一层**，与单条右键的「从索引中移除」同一条规则：`materials` 行删掉，
+        标签、阅读进度、碎片标题与说明继续留在库里，文件找回来时按 `path` 自动跟回来。
+
+        磁盘文件一律不动——批量"删文件"不在这个入口的能力范围内：要动文件就回到
+        单条右键的「删除文件」（送回收站 + 逐条确认），一次批量回收几十份资料不该被
+        一个手势触发。
+        """
+        paths = list(self._selected_paths)
+        if not paths:
+            return
+        answer = QMessageBox.question(
+            self,
+            "从索引中移除",
+            f"要把选中的 {len(paths)} 项从索引里移除吗？\n\n"
+            "磁盘上不会有任何改动。标签与阅读进度会留在数据库里，"
+            "文件找回来时会自动重新关联。",
+            QMessageBox.Yes | QMessageBox.No,
+            QMessageBox.No,
+        )
+        if answer != QMessageBox.Yes:
+            return
+
+        # 一个事务删完一批：不在循环里逐条提交（几百行的多选会卡在 fsync 上）
+        removed = self.database.remove_material_paths(paths)
+        self._selected = None
+        self._selected_paths = []
+        self.reload()
+        self.index_updated.emit()
+        show_toast(self.window(), f"已移除 {removed} 项索引")
+
+    def clear_missing_rows(self):
+        """把「文件已不在原位置」的索引行一次清干净。
+
+        这就是 4.4 状态表里那条边界的收尾：文件被移动、改名、删除之后，那一行会永远
+        灰着，而"重新定位"一次只能修一条。找不回来的（确认不要了、被别的工具清过），
+        整批清掉才是结束——清掉的只是索引行，第二层数据一律留着。
+        """
+        count = self._missing_count()
+        if not count:
+            show_toast(self.window(), "没有失效的索引行")
+            return
+        answer = QMessageBox.question(
+            self,
+            "清除失效文件",
+            f"要把 {count} 条「文件已不在原位置」的索引行清掉吗？\n\n"
+            "磁盘上不会有任何改动（文件本来就不在原位）。\n"
+            "标签与阅读进度会留在数据库里，文件找回来时会自动重新关联。",
+            QMessageBox.Yes | QMessageBox.No,
+            QMessageBox.No,
+        )
+        if answer != QMessageBox.Yes:
+            return
+
+        removed = self.database.remove_missing_materials()
+        self._selected_paths = []
+        self.reload()
+        self.index_updated.emit()
+        show_toast(self.window(), f"已清除 {removed} 条失效索引")
 
     def open_path(self, path):
         if not path:

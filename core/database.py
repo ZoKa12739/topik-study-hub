@@ -1792,8 +1792,12 @@ class StudyDatabase:
 
         `(size, mtime, subject)` 都没变就是 unchanged，不写库；这样日常启动只更新变化的那几行。
 
-        `complete=False`（扫描被取消）时**禁止标记缺失**：没走完的那棵树里每一个文件
-        都会"看起来不在"，把它们全标成丢失，是取消一次索引就毁掉整页状态的做法。
+        完整扫描时先跑一轮**自动归位**（`_repair_moved_materials`）：文件被挪了地方、
+        换了上层文件夹、乃至整个资料根目录改了名，索引行都要接到新位置上去，
+        而不是在新路径另插一行、把旧行连同标签一起标成"已不在原位置"。
+
+        `complete=False`（扫描被取消）时**禁止标记缺失，也不自动归位**：没走完的那棵树里
+        每一个文件都会"看起来不在"，拿它判缺失、猜新位置，是取消一次索引就毁掉整页状态的做法。
         """
         added = updated = unchanged = 0
         root = self.get_material_root()
@@ -1804,16 +1808,24 @@ class StudyDatabase:
             existing = {
                 path_key(row["path"]): row
                 for row in self.connection.execute(
-                    "SELECT id, path, subject, ext, size, mtime, missing FROM materials"
+                    "SELECT id, path, name, subject, ext, size, mtime, missing FROM materials"
                 )
             }
-            seen = set()
+            seen = {path_key(normalize_path(record["path"])) for record in records}
+            handled, claims, repair = set(), set(), {"relocated": 0, "merged": 0, "ambiguous": 0}
+            if complete:
+                handled, claims, repair = self._repair_moved_materials(
+                    existing, seen, records
+                )
             inserts = []
             updates = []
             for record in records:
                 stored = normalize_path(record["path"])
                 key = path_key(stored)
-                seen.add(key)
+                if key in claims:
+                    # 这一份文件已经被自动归位的旧行认领（新路径就是它），
+                    # 再插一行只会得到同一个文件的两行索引
+                    continue
                 row = existing.get(key)
                 if row is None:
                     inserts.append(
@@ -1864,7 +1876,7 @@ class StudyDatabase:
             out_of_scope_ids = []
             missing_ids = []
             for key, row in existing.items():
-                if key in seen:
+                if key in seen or key in handled:
                     continue
                 ext = (row["ext"] or "").lower()
                 if ext not in MATERIAL_EXTS or (root and not is_under_root(row["path"], root)):
@@ -1899,7 +1911,72 @@ class StudyDatabase:
             "updated": updated,
             "unchanged": unchanged,
             "missing": len(missing_ids) if complete else 0,
+            "relocated": repair["relocated"],
+            "merged": repair["merged"],
+            "ambiguous": repair["ambiguous"],
         }
+
+    def _repair_moved_materials(self, existing, seen, records):
+        """扫描期的**自动归位**：文件被搬走后，把索引行接到新位置。
+
+        用户整理资料的手法规矩与工具无关：把一整个真题文件夹从 `往届\\改革前历年真题\\中级\\中12\\`
+        提到 `往届改革前历年真题\\中级\\`、把资料根目录改到上一级、甚至把根目录改名——
+        对 `materials` 来说都只是"这一行的文件不在了"。没有这一轮，扫描只会在新路径
+        **另插一行**（没有标签、没有阅读进度），旧行则被打上"已不在原位置"，用户的数据
+        悬在两行之间；`重新定位` 一次只能修一行，几百份资料就这么手工修不完。
+
+        判据只有一条：**文件名与大小完全相同、且全树只此一份**时，认定"同一个文件搬走了"，
+        走 `_move_material_row` 把索引行与第二层数据一起搬过去（第二层因此一个字段都不丢）。
+        匹配不上、或同时匹配到多份（同一份资料在多个文件夹里各有一份同名同大小的拷贝）时
+        **不动**——猜错比不猜更糟，那种情况留给用户手动「重新定位」，并计入 `ambiguous` 回报。
+
+        返回 `(handled, claims, summary)`：
+          * `handled` —— 已归位/已合并的旧行 path_key，调用方不要再把它们标缺失
+          * `claims`  —— 被认领为新路径的记录 path_key，调用方不要再为它们另插一行
+          * `summary` —— `{"relocated": N, "merged": M, "ambiguous": K}`；
+            merged 指"新路径上已经有一行索引"（上一轮扫描先发现了新位置）于是并过去的那种
+        """
+        moved = {"relocated": 0, "merged": 0, "ambiguous": 0}
+        handled, claims = set(), set()
+        if not existing or not records:
+            return handled, claims, moved
+
+        by_fingerprint = {}
+        for record in records:
+            stored = normalize_path(record["path"])
+            by_fingerprint.setdefault(
+                (os.path.normcase(record["name"]), record["size"]), []
+            ).append((stored, path_key(stored)))
+
+        for key, row in sorted(existing.items(), key=lambda item: item[1]["id"]):
+            if key in seen:
+                continue
+            if os.path.exists(row["path"]):
+                # 文件还在，只是没被这次扫描走到：那不是搬家，是"换了资料根目录"。
+                # 按既有规则处理（超出根目录的行整行移除），不去猜它该去哪儿
+                continue
+            matches = [
+                (stored, record_key)
+                for stored, record_key in by_fingerprint.get(
+                    (os.path.normcase(row["name"]), row["size"]), []
+                )
+                if record_key not in claims
+            ]
+            if not matches:
+                continue
+            if len(matches) > 1:
+                moved["ambiguous"] += 1
+                continue
+            target, target_key = matches[0]
+            claims.add(target_key)
+            handled.add(key)
+            clash = existing.get(target_key)
+            if clash is not None and clash["id"] != row["id"]:
+                moved["merged"] += 1
+            else:
+                moved["relocated"] += 1
+            self._move_material_row(row, target)
+        return handled, claims, moved
 
     def last_indexed_at(self):
         return self.get_setting("last_indexed_at", "")
@@ -2036,6 +2113,37 @@ class StudyDatabase:
             self.connection.execute("DELETE FROM materials WHERE path = ?", (path,))
             self.connection.execute("UPDATE snippets SET missing = 1 WHERE path = ?", (path,))
 
+    def remove_material_paths(self, paths):
+        """批量删除资料索引行（P3 的「从索引中移除（N 项）」）。
+
+        与 `remove_material_row` 同一条规则：**只删第一层**，标签、阅读进度、
+        碎片标题与说明全部留在库里——文件哪天找回来，第二层按 `path` 自动跟回来。
+        一个事务走完，不在循环里逐条提交。返回实际删掉的行数。
+        """
+        cleaned = [normalize_path(path) for path in paths if path]
+        if not cleaned:
+            return 0
+        with self.connection:
+            for path in cleaned:
+                self.connection.execute("DELETE FROM materials WHERE path = ?", (path,))
+                self.connection.execute("UPDATE snippets SET missing = 1 WHERE path = ?", (path,))
+        return len(cleaned)
+
+    def remove_missing_materials(self):
+        """把「文件已不在原位置」的索引行**一次清干净**（P3 的「清除失效」）。
+
+        只清当前资料根目录下、且会被列表显示出来的那些行（与 `library_snapshot` 同一条
+        可见性规则）：换资料根目录时遗留在库里的旧行不在用户眼前，也不该被顺手抹掉。
+        """
+        root = self.get_material_root()
+        paths = [
+            row["path"]
+            for row in self.connection.execute("SELECT path, ext FROM materials WHERE missing = 1")
+            if (row["ext"] or "").lower() in MATERIAL_EXTS
+            and (not root or is_under_root(row["path"], root))
+        ]
+        return self.remove_material_paths(paths)
+
     def relocate_material(self, old_path, new_path):
         """文件被移动/改名后，把索引行与**第二层数据一起**搬到新路径。
 
@@ -2050,6 +2158,18 @@ class StudyDatabase:
         row = self.material_row(old_path)
         if row is None:
             return None
+        with self.connection:
+            moved = self._move_material_row(row, new_path)
+        return moved
+
+    def _move_material_row(self, row, new_path):
+        """把一行索引连同第二层数据搬到 `new_path`，返回新的索引行。
+
+        **不自行开事务**：`apply_material_scan` 的自动归位跑在一个已经打开的事务里，
+        在这里再套一层 `with self.connection` 会让内层提前提交，把"扫描落库"切成两半。
+        新路径已在索引里（重名，或扫描已经先一步发现了新位置）时，先把这一行的第二层
+        数据**并过去**再删它——不能连同标签一起丢掉。
+        """
         new_path = normalize_path(new_path)
         name = os.path.basename(new_path)
         ext = os.path.splitext(name)[1].lower()
@@ -2060,34 +2180,33 @@ class StudyDatabase:
         except OSError:
             size, mtime = row["size"], row["mtime"]
 
-        with self.connection:
-            clash = self.connection.execute(
-                "SELECT id, path FROM materials WHERE path = ?", (new_path,)
-            ).fetchone()
-            if clash is not None:
-                # 新路径已经在索引里（重名，或扫描已经先一步发现了新位置）：
-                # 把这一行的第二层数据**并过去**再删它，不要连同标签一起丢掉
-                self._merge_material_row(row, dict(clash))
-            else:
-                self.connection.execute(
-                    "UPDATE materials SET path = ?, name = ?, subject = ?, ext = ?, size = ?, "
-                    "mtime = ?, missing = 0 WHERE id = ?",
-                    (new_path, name, subject, ext, size, mtime, row["id"]),
+        clash = self.connection.execute(
+            "SELECT id, path FROM materials WHERE path = ?", (new_path,)
+        ).fetchone()
+        if clash is not None and clash["id"] != row["id"]:
+            # 新路径已经在索引里（重名，或扫描已经先一步发现了新位置）：
+            # 把这一行的第二层数据**并过去**再删它，不要连同标签一起丢掉
+            self._merge_material_row(row, dict(clash))
+        else:
+            self.connection.execute(
+                "UPDATE materials SET path = ?, name = ?, subject = ?, ext = ?, size = ?, "
+                "mtime = ?, missing = 0 WHERE id = ?",
+                (new_path, name, subject, ext, size, mtime, row["id"]),
+            )
+        for table, columns in self._PATH_KEYED_TABLES.items():
+            moved = self.connection.execute(
+                f"SELECT * FROM {table} WHERE path = ?", (row["path"],)
+            ).fetchall()
+            if moved:
+                self.connection.executemany(
+                    f"INSERT OR IGNORE INTO {table} ({', '.join(columns)}) "
+                    f"VALUES ({', '.join('?' for _ in columns)})",
+                    [
+                        tuple(new_path if column == "path" else record[column] for column in columns)
+                        for record in moved
+                    ],
                 )
-            for table, columns in self._PATH_KEYED_TABLES.items():
-                moved = self.connection.execute(
-                    f"SELECT * FROM {table} WHERE path = ?", (row["path"],)
-                ).fetchall()
-                if moved:
-                    self.connection.executemany(
-                        f"INSERT OR IGNORE INTO {table} ({', '.join(columns)}) "
-                        f"VALUES ({', '.join('?' for _ in columns)})",
-                        [
-                            tuple(new_path if column == "path" else record[column] for column in columns)
-                            for record in moved
-                        ],
-                    )
-                    self.connection.execute(f"DELETE FROM {table} WHERE path = ?", (row["path"],))
+                self.connection.execute(f"DELETE FROM {table} WHERE path = ?", (row["path"],))
         return self.material_row(new_path)
 
     # ==================================================================

@@ -14,7 +14,7 @@ This repository is version-controlled and published at <https://github.com/ZoKa1
 
 | File | Role |
 |---|---|
-| `docs/PRODUCT_SPEC.md` | **Authoritative product spec** (v1.16). Features, pages, data model, decisions D1–D16, 8-phase roadmap in ch.10 |
+| `docs/PRODUCT_SPEC.md` | **Authoritative product spec** (v1.17). Features, pages, data model, decisions D1–D16, 8-phase roadmap in ch.10 |
 | `design/DESIGN.md` | **Authoritative visual spec** (v1.8). Color/type/spacing tokens, the 10 Linear-derived rules, D-1…D-5 stages, known gotchas |
 | `USER_CONTEXT.md` | **Study time recording spec**. Requirements and principles for active study time vs app runtime tracking |
 | `docs/Toolkit_Design_Proposal.md` | The original outline. Historical — superseded by `PRODUCT_SPEC.md` |
@@ -235,6 +235,27 @@ Things that are easy to get wrong here:
   the `snippets` row `missing=1`, while tags, reading progress and the snippet's title/note stay put.
   Restoring the file from the recycle bin therefore brings the tags back on the next scan. The same
   menu entry on a row whose file is already gone reads 「从索引中移除」 and touches no file at all.
+- **A complete scan auto-relocates moved files (`_repair_moved_materials`, v1.17).** The user
+  reorganizing folders is normal, and before this the scan did the one thing that hurt: it
+  **inserted a new row at the new path** (no tags) and flagged the old row `missing` (tags still
+  on it), leaving the user's data stranded across two rows while 「重新定位」 fixed one file per
+  click. The rule is deliberately narrow — **same `name` and same `size`, and exactly one such
+  record in the whole tree** — then `_move_material_row` (the transaction-free core that
+  `relocate_material` also uses) moves the index row *and* every `_PATH_KEYED_TABLES` row.
+  Two identical copies in the tree is the normal way people organize, so that case counts as
+  `ambiguous` and is **left alone**: a wrong guess is worse than no guess, and the UI reports the
+  count so the user knows to relocate by hand. The pass also rescues rows left behind by a
+  **root change**: out-of-scope rows whose file is gone get the same chance before the out-of-scope
+  sweep deletes them (rows whose file still exists are "switched library", not "moved" — those
+  are still deleted). Same `complete=False` rule as the missing pass: a cancelled scan repairs
+  nothing.
+- **「清除失效」 (`clear_missing_rows` / `remove_missing_materials`) and multi-select exist because
+  of the 424-missing-row day.** Both follow the first-layer-only rule, so a cleanup never costs a
+  tag; the toolbar button carries the count, and the list is `ExtendedSelection` with a batch
+  detail mode (`_select_batch`) — single-row actions (open / tag / relocate) are disabled rather
+  than left pointing at nothing. Selection lives in `_selected_paths`, which `_render_list`
+  restores by `path` after every rebuild (set selection *after* `addItem` — setting it before is
+  silently dropped).
 
 ### P4 知识碎片的清单与两层
 

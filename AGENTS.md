@@ -11,7 +11,7 @@ A local-first desktop toolkit for TOPIK Korean exam prep: PySide6 GUI, SQLite pe
 1. **`CLAUDE.md`** — the authoritative engineering rules: architecture and module map, commands, the verification checks, styling (`ui/theme.py`), the two-layer SQLite persistence model, threading and flush hazards, and the light delivery loop.
 2. **`USER_CONTEXT.md`** — study time recording spec: record real study time, not app runtime, and which activities count.
 
-Authoritative for their own domains: `docs/PRODUCT_SPEC.md` (v1.16, product spec) and `design/DESIGN.md` (v1.8, visual spec). When code and a plan disagree, the plan is usually right about *intent* and the code about *current state* — fix whichever is wrong and say which. **Keep the version numbers here current** — a stale pointer in the entry file sends every later session to wrong information.
+Authoritative for their own domains: `docs/PRODUCT_SPEC.md` (v1.17, product spec) and `design/DESIGN.md` (v1.8, visual spec). When code and a plan disagree, the plan is usually right about *intent* and the code about *current state* — fix whichever is wrong and say which. **Keep the version numbers here current** — a stale pointer in the entry file sends every later session to wrong information.
 
 ## Rules that apply immediately
 

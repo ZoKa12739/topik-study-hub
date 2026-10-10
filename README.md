@@ -70,7 +70,7 @@ ui/
   components.py       EmptyState / Banner / InlineProgress / Toast
   *_view.py           六个页面
 docs/
-  PRODUCT_SPEC.md     权威产品规格 v1.16（功能、页面、数据模型、决策 D1–D16、路线图）
+  PRODUCT_SPEC.md     权威产品规格 v1.17（功能、页面、数据模型、决策 D1–D16、路线图）
 design/
   DESIGN.md           权威视觉规格 v1.8（色板 / 字号 / 间距 token，Linear 派生的 10 条规则）
 USER_CONTEXT.md       实际学习投入时间统计规范与原则
@@ -117,7 +117,7 @@ Pretendard **不含简体中文字形**（实测 11/11 缺失），中文必须�
 
 ## 文档
 
-- `docs/PRODUCT_SPEC.md` —— 权威产品规格（v1.16）。功能边界、页面结构、数据模型、决策记录 D1–D16 都在这里，改行为前先读它
+- `docs/PRODUCT_SPEC.md` —— 权威产品规格（v1.17）。功能边界、页面结构、数据模型、决策记录 D1–D16 都在这里，改行为前先读它
 - `design/DESIGN.md` —— 权威视觉规格（v1.8）
 - `USER_CONTEXT.md` —— 学习时间记录需求与设计原则
 - `CLAUDE.md` / `AGENTS.md` —— 给 coding agent 的项目说明：架构、踩过的坑、每条踩坑背后的实测证据

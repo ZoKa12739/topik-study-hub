@@ -37,6 +37,29 @@ PDF **只记路径、不复制**：它们本来就躺在用户的资料树里（
 
 AB 生效时播到 B 点回到 A 点，**不会**推进到下一段——用户正是在死磕这一句。
 
+## A、B 都设好 = 把这一段音频"裁剪"出来（2026-10-10）
+
+从 B 点落下的那一刻起，播放**只在这一段里**发生：按播放先落到 A 点，进度条拖到段外再播也会
+被送回 A 点，播到 B 点就回到 A 点继续。**段跟着曲目走**——每个曲目在 `track_progress` 里有
+自己的一份 A/B，切到哪一段就恢复哪一段的（音频 1 的 A-B 与音频 2 的 C-D 互不覆盖），换列表、
+关窗口、重新导入文件都不动它，**只有「清除」作数**。唯一的例外是重新导入了一个更短的文件、
+段整体落在文件尾之外：那种段播不到 B 点，只能作废（`_drop_stale_ab`）。
+
+判据统一收在 `_ab_active()`（A 设了、B 设了、B 在 A 之后）——段内回跳、按钮可用态、列表里的
+胶囊、元信息显示全问它，各写一遍的话"只剩一半"的半段状态总会在某一处漏过去。
+
+## "媒体就绪"信号会迟到——拿它判断长度就是拿旧文件的长度（2026-10-10）
+
+`setSource()` 之后，**上一个文件的就绪信号还会到**：`mediaStatusChanged` 是从媒体线程过来、
+排进事件队列的，`setSource` 把状态和 `duration()` 归零之后它才被送达。那一刻
+`duration()` 报的还是**旧文件**的长度，而 `self.pos_a` 早就换成**新曲目**的段了——拿这个数
+去判"段是不是超出音频长度"，一段好端端的 A-B 就被清掉，用户看到的是"这个音频比原来的
+A-B 段还短"。
+
+判据是"播放器自己是不是也已经就绪"（`_media_ready_fresh`）：还在 `Loading` 里，就说明这条
+信号描述的是上一个文件，等当前文件自己的那一个（`Loading → Loaded` 一定会来）。换源时顺手
+把挂起的段首定位清掉（`_swap_source`），迟到的信号就没什么可拽的了。
+
 ## 跟读时长的定义（4.3 数据依赖）
 
 * 只统计**处于播放状态**的时间；暂停、拖动进度条的时间不计
@@ -177,6 +200,24 @@ def elide(text, limit=26):
         return text
     keep = limit // 2
     return f"{text[:keep]}…{text[-(limit - keep - 1):]}"
+
+
+def ab_range(item):
+    """列表行用的 AB 段 `(起, 止)` 文字；没有生效的段时给 `(None, None)`。
+
+    `item` 来自 `playlist_items()` 的 LEFT JOIN——没听过的曲目这两栏是 `None`，
+    所以"没有"和"只设了 A 点"在这里是同一种情况：都不算一段。
+    """
+    start, end = item.get("pos_a_ms"), item.get("pos_b_ms")
+    if start is None or end is None or end <= start:
+        return None, None
+    return stamp(start), stamp(end)
+
+
+def ab_label(item):
+    """列表行胶囊里的 AB 段文字，例：`AB 0:10–0:20`。没有段时给 `None`。"""
+    start, end = ab_range(item)
+    return None if start is None else f"AB {start}–{end}"
 
 
 def clock(seconds):
@@ -705,6 +746,7 @@ class ShadowingView(QWidget):
         self.loop_count = 0                   # 本次会话里的 AB 循环次数（D5）
         self._seek_target = None              # 正在跳转的目标位置，见 _seek
         self._pending_position = None         # 【死字段】播放位置恢复已停用；只会是 None
+        self._pending_ab_start = False        # 新曲目带着 AB 段：等媒体就绪把播放头先挪到段首
         self._rebuilding = False
         self._banner_action = None
         self._closed = False
@@ -1083,7 +1125,7 @@ class ShadowingView(QWidget):
         self.btn_a = QPushButton("设 A 点")
         self.btn_b = QPushButton("设 B 点")
         self.btn_clear_ab = QPushButton("清除")
-        self.btn_clear_ab.setToolTip("清除 A-B 点")
+        self.btn_clear_ab.setToolTip("清除 A-B 点（每个音频各记自己的一段）")
 
         for button in (self.btn_a, self.btn_b):
             button.setObjectName("iconButton")
@@ -1235,7 +1277,13 @@ class ShadowingView(QWidget):
         # 4.3 的边界条款点名了这一条（当前这页没有常驻文本框，但改名/新建的输入框
         # 会短暂拿到焦点，机制留着）。
         self._letter_shortcuts = []
-        for keys, handler in (("Space", self.toggle_play), ("A", self.set_a), ("B", self.set_b)):
+        for keys, handler in (
+            ("Space", self.toggle_play),
+            ("A", self.set_a),
+            ("B", self.set_b),
+            # 清除也给了单键：段是"裁剪"状态，取消它必须是随手能做的事
+            ("C", self.clear_ab),
+        ):
             shortcut = QShortcut(QKeySequence(keys), self)
             shortcut.setContext(Qt.WidgetWithChildrenShortcut)
             shortcut.activated.connect(handler)
@@ -1348,6 +1396,9 @@ class ShadowingView(QWidget):
                 pills.append(("在听", False))
             if count > 0:
                 pills.append((f"已听 {count} 次", is_active))
+            ab = ab_label(item)
+            if ab:
+                pills.append((ab, is_active))
             pills.append((duration, True))
             kr_page = item.get("kr_page")
             cn_page = item.get("cn_page")
@@ -1371,6 +1422,9 @@ class ShadowingView(QWidget):
                 bits.append("在听")
             if count > 0:
                 bits.append(f"已听 {count} 次")
+            ab = ab_label(item)
+            if ab:
+                bits.append(ab)
             bits.append(duration)
             kr_page = item.get("kr_page")
             cn_page = item.get("cn_page")
@@ -1872,7 +1926,7 @@ class ShadowingView(QWidget):
         absolute = audio.library_path(item["path"], AUDIO_DIR)
         if not os.path.isfile(absolute):
             # 音频库里的文件被删了：曲目行与跟读记录都留着（4.3 状态表）
-            self.player.setSource(QUrl())
+            self._swap_source(QUrl())
             self.lbl_current.setText(f"{item['title']}（文件已不在音频库中）")
             self.btn_play.setEnabled(False)
             self._show_banner(
@@ -1888,7 +1942,11 @@ class ShadowingView(QWidget):
         # 接着播"（跟读时长凭空长一截），录音轨迹也会记错起点。
         self.last_position = 0
         self._seek_target = None
-        self.player.setSource(QUrl.fromLocalFile(absolute))
+        self._swap_source(QUrl.fromLocalFile(absolute))
+        # 这一段自己有 AB 段就把播放头挂到段首，等媒体真的就绪时落下来（_on_media_status）。
+        # 于是"切到音频 1 只播它的 A-B、切到音频 2 只播它的 C-D"与是否自动播放无关：
+        # 不自动播，也先停在段首等着。**必须在换源之后**——换源会把这个挂起状态收回来。
+        self._pending_ab_start = self._ab_active()
         self._pending_position = None    # 播放位置恢复已停用：永远从头开始（见 _pending_position 定义处）
         if progress["status"] != "done":
             self.database.set_track_status(track_id, "listening")
@@ -1944,6 +2002,9 @@ class ShadowingView(QWidget):
         parts = ["在听"]
         if count > 0:
             parts.append(f"已听 {count} 次")
+        if self._ab_active():
+            # 这一段被裁剪过：把段写在明处，跟读时不用猜现在听的是哪一句
+            parts.append(f"AB {stamp(self.pos_a)}–{stamp(self.pos_b)}")
         if listened:
             parts.append(f"已跟读 {stamp(listened)}")
         if item["loop_count"]:
@@ -1991,7 +2052,7 @@ class ShadowingView(QWidget):
         self.flush_study_session()
         self.database.remove_track_from_playlist(self.playlist_id, self.track_id)
         self.track_id = None
-        self.player.setSource(QUrl())
+        self._swap_source(QUrl())
         self._render_track(None)
         self.reload_tracks()
 
@@ -2028,6 +2089,8 @@ class ShadowingView(QWidget):
             self.player.pause()
             self.flush_study_session()
         else:
+            # 段在被裁剪的状态：从段外接着播没有意义，先送回段首
+            self._sync_playback_to_ab()
             self.player.play()
 
     def _on_playback_state(self, state):
@@ -2080,11 +2143,15 @@ class ShadowingView(QWidget):
             self.slider.setValue(position)
         self.lbl_current_time.setText(stamp(position))
 
-        # AB 循环：播到 B 点回到 A 点。**不推进列表**——用户正是在死磕这一句。
-        if self.pos_a >= 0 and self.pos_b > self.pos_a and position >= self.pos_b:
-            self._seek(self.pos_a)
-            self.loop_count += 1
-            self._update_track_meta()
+        # AB 段：播到 B 点回到 A 点，**不推进列表**——用户正是在死磕这一句。
+        # 段外起步（刚载入、进度条被拖到段前）也送回段首，那不算一次循环。
+        if self._ab_active():
+            if position >= self.pos_b:
+                self._seek(self.pos_a)
+                self.loop_count += 1
+                self._update_track_meta()
+            elif position < self.pos_a:
+                self._seek(self.pos_a)
 
     def _seek(self, position):
         """跳转。**跳过去的那一段不算听过**（4.3 时长定义）。
@@ -2109,20 +2176,36 @@ class ShadowingView(QWidget):
             if self._pending_position is not None:
                 target, self._pending_position = self._pending_position, None
                 self._seek(target)
+            elif self._pending_ab_start:
+                # 新的一段带着自己的 AB 段。**先确认这信号是当前曲目的**——上一个文件
+                # 迟到的就绪信号也会走到这儿，那时 duration() 还是旧文件的长度，
+                # 拿它判"段超出音频长度"会把一段好端端的 A-B 清掉（见 _media_ready_fresh）。
+                if self._media_ready_fresh():
+                    self._pending_ab_start = False
+                    self._drop_stale_ab()
+                    self._sync_playback_to_ab()
+                # 判断不了就等下一个：当前文件的 Loading → Loaded 一定会来，
+                # 这一轮什么也不做，不会有任何损失。
             return
         if status != QMediaPlayer.MediaStatus.EndOfMedia:
             return
-        if self.pos_a >= 0 and self.pos_b > self.pos_a:
-            self._seek(self.pos_a)
-            self.loop_count += 1
-            self.player.play()
-            return
+        if self._ab_active():
+            if self.player.duration() and self.pos_a >= self.player.duration():
+                # 段在文件尾之外：回跳只会又一次撞到文件尾，无限空转。作废它，照常推进。
+                self._drop_stale_ab()
+            else:
+                self._seek(self.pos_a)
+                self.loop_count += 1
+                self.player.play()
+                return
         self._advance_after_finish()
 
     def on_player_error(self, error, message):
         # Qt 在载入新音源时可能先发一次 NoError，忽略掉
         if error == QMediaPlayer.Error.NoError:
             return
+        # 这一条媒体不会就绪了：挂着等它落地的 AB 段起始位一起作废
+        self._pending_ab_start = False
         self._set_status("播放失败")
         self._show_banner(
             "danger", f"音频无法播放：{message}。可以先用其他工具转成 MP3 再导入。"
@@ -2155,24 +2238,94 @@ class ShadowingView(QWidget):
 
     # ---- AB 点 ----
 
+    def _ab_active(self):
+        """AB 段是否生效：A 设了、B 设了、B 确实在 A 之后。
+
+        回跳、按钮可用态、列表胶囊、元信息全问它。各写一遍的话，"只剩一半"的
+        半段状态总会在某一处漏过去——而它看起来跟"设好了"一模一样。
+        """
+        return self.pos_a >= 0 and self.pos_b > self.pos_a
+
+    def _swap_source(self, url):
+        """换播放源。顺手把"等媒体就绪把播放头挪到段首"的挂起状态清掉。
+
+        上一个文件的就绪信号还会到（`mediaStatusChanged` 是排队的，见
+        `_media_ready_fresh`）。先把挂起状态收回来，迟到的信号就没有可拽的东西——
+        新的段在源换好之后才挂上，顺序不会错。
+        """
+        self._pending_ab_start = False
+        self.player.setSource(url)
+
+    def _media_ready_fresh(self):
+        """这个"媒体就绪"信号是不是**当前曲目**的。
+
+        播放器自己还停在 `Loading`，说明这条信号描述的是**上一个文件**：`setSource` 早就把
+        状态归位了，现在才送达的是之前排进队列的那一个。那时 `duration()` 报的还是旧文件的
+        长度，拿它判"段超出音频长度"会把用户设好的段清掉。
+
+        等当前文件自己的 `Loading → Loaded` 那一个就好——它一定会来。判断不了的一轮什么
+        也不做，不会有任何损失；而误信一次的代价是弄丢用户的段。
+        """
+        return self.player.mediaStatus() in (
+            QMediaPlayer.MediaStatus.LoadedMedia,
+            QMediaPlayer.MediaStatus.BufferedMedia,
+        )
+
+    def _playhead(self):
+        """当前播放头。跳转刚发出去、位置信号还没回来时，报的是旧值——
+        那时候"用户眼里的现在"是挂起中的目标。"""
+        return self._seek_target if self._seek_target is not None else self.player.position()
+
+    def _sync_playback_to_ab(self):
+        """把播放头收进 AB 段：停在段外就送回 A 点，段内原地不动。
+
+        AB 段生效时的语义就是"音频被裁剪到这一段"——进度条照样能拖（段内细听某一句
+        还是要拖的），但只要播出去的声音会落在段外，就从段首开始。
+        """
+        if not self._ab_active():
+            return
+        position = self._playhead()
+        if self.pos_a <= position <= self.pos_b:
+            return
+        self._seek(self.pos_a)
+
+    def _drop_stale_ab(self):
+        """AB 段整体落在当前音频长度之外就作废（重新导入一个更短的文件之后会出现）。
+
+        留着它不报错，只是永远播不到 B 点，或者每次回跳都撞在文件尾上空转——
+        那种"跟读了半小时，一句都没循环"比弹一个提示难受得多。
+        """
+        if not self._ab_active():
+            return
+        duration = self.player.duration()
+        if duration <= 0 or self.pos_a < duration:
+            return
+        start, end = stamp(self.pos_a), stamp(self.pos_b)
+        self._clear_ab_state()
+        self._show_banner(
+            "warning",
+            f"这个音频比原来的 A-B 段（{start}–{end}）还短，这一段已清除。",
+        )
+
     def set_a(self):
         if self._typing():
             return
         if self.track_id is None:
             return
-        self.pos_a = max(0, int(self.player.position()))
+        self.pos_a = max(0, int(self._playhead()))
         # 设新的 A 点时，旧的 B 点可能已经落在它前面，一并清掉
         if self.pos_b <= self.pos_a:
             self.pos_b = -1
         self._sync_ab_buttons()
         self._save_ab()
+        self._sync_playback_to_ab()
 
     def set_b(self):
         if self._typing():
             return
         if self.track_id is None:
             return
-        position = int(self.player.position())
+        position = int(self._playhead())
         if self.pos_a < 0:
             self._show_banner("info", "先设 A 点，再设 B 点。")
             return
@@ -2182,8 +2335,24 @@ class ShadowingView(QWidget):
         self.pos_b = position
         self._sync_ab_buttons()
         self._save_ab()
+        # B 点落下，段就裁好了：播放头回到段首，从这里开始只在这一段里打转
+        self._sync_playback_to_ab()
+        if self._ab_active():
+            self._show_banner(
+                "info",
+                f"A-B 段 {stamp(self.pos_a)}–{stamp(self.pos_b)} 已裁剪："
+                "此后只播这一段、来回循环。每个音频各记自己的一段，"
+                "按「清除」才取消。",
+            )
 
     def clear_ab(self):
+        if self._typing():
+            return
+        self._clear_ab_state()
+
+    def _clear_ab_state(self):
+        """清段的实际动作。与 `clear_ab` 分开：程序内部作废段（文件比段还短）时
+        不该被"焦点在输入框里"拦住——那是给用户快捷键设的闸，不是给程序的。"""
         self.pos_a = self.pos_b = -1
         self._sync_ab_buttons()
         self._save_ab()
@@ -2193,8 +2362,7 @@ class ShadowingView(QWidget):
         self.btn_b.setText(f"B: {stamp(self.pos_b)}" if self.pos_b >= 0 else "设 B 点")
         self.btn_a.setToolTip(f"A 点: {stamp(self.pos_a)}" if self.pos_a >= 0 else "设为 A 点（快捷键 A）")
         self.btn_b.setToolTip(f"B 点: {stamp(self.pos_b)}" if self.pos_b >= 0 else "设为 B 点（快捷键 B）")
-        active = self.pos_a >= 0 and self.pos_b > self.pos_a
-        self.btn_clear_ab.setEnabled(active)
+        self.btn_clear_ab.setEnabled(self._ab_active())
 
     def _save_ab(self):
         if self.track_id is None:

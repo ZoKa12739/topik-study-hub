@@ -122,7 +122,7 @@ Pretendard **不含简体中文字形**（实测 11/11 缺失），中文必须�
 - `USER_CONTEXT.md` —— 学习时间记录需求与设计原则
 - `CLAUDE.md` / `AGENTS.md` —— 给 coding agent 的项目说明：架构、踩过的坑、每条踩坑背后的实测证据
 - `docs/Toolkit_Design_Proposal.md` —— 最初的构想稿，已被 `PRODUCT_SPEC.md` 取代
-- `docs/task_plan.md` / `docs/findings.md` / `docs/progress.md` —— 开发会话与阶段演进记录
+- `docs/task_plan.md` —— 任务计划与阶段演进记录
 
 ## 许可
 

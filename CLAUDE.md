@@ -18,7 +18,7 @@ This repository is version-controlled and published at <https://github.com/ZoKa1
 | `design/DESIGN.md` | **Authoritative visual spec** (v1.8). Color/type/spacing tokens, the 10 Linear-derived rules, D-1…D-5 stages, known gotchas |
 | `USER_CONTEXT.md` | **Study time recording spec**. Requirements and principles for active study time vs app runtime tracking |
 | `docs/Toolkit_Design_Proposal.md` | The original outline. Historical — superseded by `PRODUCT_SPEC.md` |
-| `docs/task_plan.md` / `docs/findings.md` / `docs/progress.md` | Session logs and milestone records |
+| `docs/task_plan.md` | Task plan and milestone records |
 
 When the code and a plan disagree, the plans are usually right about *intent* and the code about *current state*; fix whichever is wrong and say which.
 
@@ -407,7 +407,7 @@ The interchange format is what must now be preserved. `vocab_view.load_tsv` read
 
 P1's 「Anki 导出」 button, P5's 「Anki 导出」 button, `database.anki_rows()` / `export_anki_file()` / `count_anki_export_words()`, and the three test files that covered them (`tests/test_anki_export_stress.py`, `test_anki_forensic.py`, `test_settings_anki_adversarial.py` — ~1,600 lines) are **all gone**. `PRODUCT_SPEC` was at v1.11 claiming it was done; v1.12 corrects every mention.
 
-Why it went, for the record: the export duplicated `PRODUCT_SPEC` §4.2 专攻模式 already being the drill queue (both answer "which words don't I know yet"), nothing in the repo or `docs/progress.md` shows it was ever used against a real Anki deck, and it carried ~1,600 lines of test surface for a one-shot TSV writer. The data it needed (`word_notes.state`) is still there and still exported by the JSON backup, so re-adding it is a ~60-line job, not a migration.
+Why it went, for the record: the export duplicated `PRODUCT_SPEC` §4.2 专攻模式 already being the drill queue (both answer "which words don't I know yet"), nothing in the repo shows it was ever used against a real Anki deck, and it carried ~1,600 lines of test surface for a one-shot TSV writer. The data it needed (`word_notes.state`) is still there and still exported by the JSON backup, so re-adding it is a ~60-line job, not a migration.
 
 The cost of removing it: **`PRODUCT_SPEC` §10 第 7 期 item 8, §4.2 扩展方向, §6.5, §1.2 边界, and 附录 B all claimed it existed.** That is how a feature ends up documented as ✅ while the code has zero references to it. `docs/universal_exam_hub_refactoring_plan.md` also still lists Anki 导出 as an existing asset — it is a plan, not a record, and it is wrong on that point.
 

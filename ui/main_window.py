@@ -23,7 +23,7 @@ from PySide6.QtWidgets import (
     QVBoxLayout,
     QWidget,
 )
-from PySide6.QtCore import QAbstractNativeEventFilter, QEvent, QObject, QSize, Qt, Signal
+from PySide6.QtCore import QAbstractNativeEventFilter, QEvent, QObject, QSize, Qt, QTimer, Signal
 from PySide6.QtGui import QCursor, QKeySequence, QPixmap, QShortcut
 
 from core.database import StudyDatabase
@@ -216,6 +216,10 @@ class MainWindow(QMainWindow):
     # 因此 0~4 的顺序不可改动；closeEvent 也依赖它能拿到影子跟读页。
     NAV_PAGES = ("今日学习", "智能单词仓", "影子跟读", "TOPIK 资料库", "知识碎片")
     SETTINGS_INDEX = 5
+    # 窗口现身多久后开始空闲预热（把懒装载的页在后台逐页补建）。
+    # 2 秒是给启动后头几秒的输入让路：那时用户通常还在 P0 落座，
+    # 而预热每页有几百毫秒的同步构造，撞上输入就是一下卡顿。
+    PREWARM_DELAY_MS = 2000
     RESIZE_MARGIN = 6
     DRAG_BAR_HEIGHT = 36
 
@@ -232,6 +236,13 @@ class MainWindow(QMainWindow):
         self._drag_window_offset = None
         self._dragging_window = False
         self._in_drag_filter = False
+        # 懒装载的运行时状态（见 setup_tabs / _switch_to / _prewarm_*）：
+        # _pending_page：用户最后一次导航意图对应的页索引，阻塞构造前被改写即作废；
+        # _prewarm_queue：空闲预热的待建页队列；_closing：关窗后不再建任何页
+        self._pending_page = None
+        self._prewarm_queue = []
+        self._prewarm_scheduled = False
+        self._closing = False
         self.database = StudyDatabase()
         self.setWindowTitle("TOPIK Study Hub")
         self.resize(1180, 760)
@@ -404,14 +415,20 @@ class MainWindow(QMainWindow):
         # 不依赖对端是否已存在（见 _wire_page 的注释）。
 
     def _make_placeholder(self, index):
-        """懒装载占位页：样式与页面一致（#panePage 透明底），只是空的。
+        """懒装载占位页：样式与页面一致（#panePage 透明底），中央一行"正在加载…"。
 
         用"占位 + 就地替换"而不是等用到再 addWidget：addWidget 追加会把设置页
         推离 SETTINGS_INDEX=5，而那个索引是导航映射的契约。
+        加载提示复用 theme.py 的 `QLabel#faint`，不在视图里写样式。
         """
         page = QWidget()
         page.setObjectName("panePage")
         page.setAttribute(Qt.WidgetAttribute.WA_StyledBackground, True)
+        layout = QVBoxLayout(page)
+        layout.setAlignment(Qt.AlignmentFlag.AlignCenter)
+        label = QLabel("正在加载…", page)
+        label.setObjectName("faint")
+        layout.addWidget(label)
         self._placeholders[index] = page
         return page
 
@@ -421,6 +438,7 @@ class MainWindow(QMainWindow):
         跳转、flush、refresh、close 一律经这里取页——直接摸属性会撞 None。
         首次进入某页会有一次该页的构造耗时（P2 ~0.7 s / P3 ~0.3 s），
         这是把启动成本改成"用到才付"之后的结果，不是回归。
+        预热（_prewarm_*）与点击（_build_pending）都走这里，构造是幂等的。
         """
         attr = self._page_attrs.get(index)
         if attr is None:
@@ -474,39 +492,93 @@ class MainWindow(QMainWindow):
     def _on_nav_changed(self, row):
         if row < 0:
             return
-        # 首次进入某页才构造它（懒装载），再切过去
-        self._ensure_page(row)
-        self.stacked_widget.setCurrentIndex(row)
         self.btn_settings.setChecked(False)
+        self._switch_to(row)
+
+    def _switch_to(self, index):
+        """切到某页。没构造过的页**先切到占位页**，下一轮事件循环再构造。
+
+        先切后建是感知的关键：构造是几百毫秒的同步阻塞，建完再切的话，
+        用户看到的是"点了没反应"；先切过去，"正在加载…"能连同一个事件循环
+        回合画出来，阻塞就变成"有反应的加载"。
+        """
+        self._pending_page = index
+        if index in self._page_attrs:
+            if getattr(self, self._page_attrs[index]) is not None:
+                self._pending_page = None
+                self.stacked_widget.setCurrentIndex(index)
+                return
+        elif self.planner_view is not None:
+            # index 0（P0）不在懒装载登记表里，永远在场
+            self._pending_page = None
+            self.stacked_widget.setCurrentIndex(index)
+            return
+        self.stacked_widget.setCurrentIndex(index)
+        QTimer.singleShot(0, lambda: self._build_pending(index))
+
+    def _build_pending(self, index):
+        """构造 pending 的页并切过去。用户在阻塞前又点了别的页则作废本轮。"""
+        if self._closing:
+            return
+        if self._pending_page is not None and self._pending_page != index:
+            return
+        self._pending_page = None
+        self._ensure_page(index)
+        self.stacked_widget.setCurrentIndex(index)
 
     def open_settings(self, checked=None):
         # checked 参数：QPushButton.clicked 会带一个 bool，这里忽略它
         self.btn_settings.setChecked(True)
-        # 设置页懒装载：第一次打开才构造
-        self._ensure_page(self.SETTINGS_INDEX)
+        # 设置页懒装载：第一次打开才构造。同样先显示占位页（加载中…），下一帧再建
+        self._pending_page = self.SETTINGS_INDEX
         # 清空导航选中（-1 会被 _on_nav_changed 忽略），再切到设置页
         self.sidebar.setCurrentRow(-1)
         self.stacked_widget.setCurrentIndex(self.SETTINGS_INDEX)
-        self.settings_view.refresh()
+        if self.settings_view is None:
+            QTimer.singleShot(0, self._build_pending_settings)
+        else:
+            self._pending_page = None
+            self.settings_view.refresh()
+
+    def _build_pending_settings(self):
+        if self._closing:
+            return
+        if self._pending_page is not None and self._pending_page != self.SETTINGS_INDEX:
+            return
+        self._pending_page = None
+        self._ensure_page(self.SETTINGS_INDEX)
+        if self.settings_view is not None:
+            self.settings_view.refresh()
+
+    def _goto_page_then(self, index, action):
+        """跳页并在页面就绪后执行动作（如"跳到资料库并选中这张图片"）。
+
+        不能在这里直接 `_ensure_page(index)` 再动作：那会把几百毫秒的构造
+        塞回点击的处理函数里，占位页连一帧都画不出来。_switch_to 负责先显示
+        占位页并登记 pending，动作排在下一帧、构造之后跑。
+        """
+        self._goto_page(index)
+        QTimer.singleShot(0, lambda: action(self._ensure_page(index)))
 
     def _show_snippet(self, path):
-        self._goto_page(self.NAV_PAGES.index("知识碎片"))
-        self._ensure_page(self.NAV_PAGES.index("知识碎片")).select_path(path)
+        self._goto_page_then(self.NAV_PAGES.index("知识碎片"), lambda v: v.select_path(path))
 
     def _show_shadowing(self):
         self._goto_page(self.NAV_PAGES.index("影子跟读"))
 
     def _show_vocab(self, list_id):
         index = self.NAV_PAGES.index("智能单词仓")
-        self._goto_page(index)
         if list_id and list_id > 0:
-            self._ensure_page(index).select_list(list_id)
+            self._goto_page_then(index, lambda v: v.select_list(list_id))
+        else:
+            self._goto_page(index)
 
     def _show_vault(self, path):
         index = self.NAV_PAGES.index("TOPIK 资料库")
-        self._goto_page(index)
         if path:
-            self._ensure_page(index).locate(path)
+            self._goto_page_then(index, lambda v: v.locate(path))
+        else:
+            self._goto_page(index)
 
     def _on_vault_index_updated(self):
         # 资料库扫完一轮 → 碎片页重读清单（P4 只读索引，自己不扫目录）
@@ -735,6 +807,33 @@ class MainWindow(QMainWindow):
         self._sync_window_state_button()
         self._sync_maximized_margins()
         self._position_window_controls()
+        # 空闲预热：窗口现身 PREWARM_DELAY_MS 后，把懒装载的页在后台逐页补建。
+        # 一次事件循环只建一页（每页仍是几百毫秒的同步构造），期间界面可响应；
+        # 建过的页点下去即零延迟。见 _prewarm_next 与 PRODUCT_SPEC v1.16。
+        if not self._prewarm_scheduled:
+            self._prewarm_scheduled = True
+            QTimer.singleShot(self.PREWARM_DELAY_MS, self._prewarm_start)
+
+    def _prewarm_start(self):
+        """空闲预热入口：按 NAV 顺序（设置页最后）收集未建的页。"""
+        if self._closing:
+            return
+        self._prewarm_queue = [
+            index
+            for index in self._page_attrs
+            if getattr(self, self._page_attrs[index]) is None
+        ]
+        self._prewarm_next()
+
+    def _prewarm_next(self):
+        """一次建一页，每建完让出一轮事件循环再建下一页。"""
+        if self._closing or not self._prewarm_queue:
+            return
+        index = self._prewarm_queue.pop(0)
+        if getattr(self, self._page_attrs[index], None) is None:
+            # 用户可能已经通过点击/跳转建过它了——_ensure_page 幂等，直接判空跳过
+            self._ensure_page(index)
+        QTimer.singleShot(0, self._prewarm_next)
 
     def hideEvent(self, event):
         self._clear_resize_cursor()
@@ -934,6 +1033,8 @@ class MainWindow(QMainWindow):
             pass
 
     def closeEvent(self, event):
+        # 先立 flag：预热/待建页的 singleShot 回调看到它就不再建任何页
+        self._closing = True
         self._remove_drag_event_filter()
         try:
             app = QApplication.instance()

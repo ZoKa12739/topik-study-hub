@@ -752,11 +752,15 @@ class PlannerView(QWidget):
             promote_button.setIcon(icon("calendar", TEXT_COLORS["faint"], 14))
             promote_button.setToolTip("放到今天")
             promote_button.setCursor(Qt.PointingHandCursor)
-            promote_button.setVisible(not task["completed"])
             promote_button.clicked.connect(
                 lambda _, task_id=task["id"]: self.promote_backlog_task(task_id)
             )
             row_layout.addWidget(promote_button, 0, Qt.AlignVCenter)
+            # setVisible 必须在 addWidget **之后**：无父控件的 QPushButton 本身
+            # 就是顶层窗口，提前对它 setVisible(True) 会真的把它画到屏幕上，
+            # 直到 addWidget 把它 reparent 进行内——每次刷新整表重建时就闪一下
+            # （切回首页、添加、勾选三个触发点全是这一下，2026-10-11 实测）。
+            promote_button.setVisible(not task["completed"])
 
             # 栏宽只有 300px，复选框标题按 CJK 逐字折行（`_wrap_cjk`）；折几行，
             # 行高就多几个字高。

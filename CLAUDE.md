@@ -184,6 +184,13 @@ Pages sit in a `QStackedWidget`. Indices **0–4** are the five module views, wh
   条目时出现）。页面上这两栏的分界看 `BACKLOG_PANE_WIDTH` 的注释；主列变窄到约 590px，
   所以 `MainWindow` 最小宽度 980 → **1120**，再把「继续上次」行的标题 + 胶囊挤到折行
   就不值了。
+- **新建控件先 `addWidget` 再 `setVisible`**（fixed 2026-10-11）：不传父控件造出来的
+  `QPushButton` 本身就是顶层窗口，提前对它 `setVisible(True)` 会真的把它画到屏幕上，
+  直到被 `addWidget` reparent 进行内。`_refresh_backlog` 每趟重建行时，那个 26×26 的
+  「放到今天」按钮就这么在屏幕上闪了一帧——切回首页、添加待办、勾选待办三个触发点
+  全是这一下（曾误判为词表弹层跨页悬浮，探针日志抓到 `[SHOW WINDOW] taskPromoteButton`
+  才定位）。行内控件一律"构造 → 接信号 → addWidget → setVisible"，别在 addWidget
+  之前动可见性。
 
 ### P1 单词仓的三个模式
 

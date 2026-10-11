@@ -267,6 +267,21 @@ class WordListComboBox(QComboBox):
             self._popup.hide()
         super().hidePopup()
 
+    def hideEvent(self, event):
+        """页面被切走时显式收起弹层。
+
+        弹层是 `Qt.Popup`——挂在 combo 上的**独立顶层窗**：P1 藏进
+        `QStackedWidget` 时它不跟着隐藏，会一直浮在内容岛上，直到下一次
+        "弹层外点击"才关。于是 Ctrl+1（或不产生弹层外点击的任意方式）切到
+        别的页时，它会浮过去闪一下；下一次鼠标点在任何地方把它关掉，
+        观感就是"添加待办时也闪一下"。
+
+        显式 `hide()` 两条路都堵住：本页可见时关闭不留悬浮窗，本页已隐藏时
+        也知道它不该在。已经关着时 `hide()` 是空操作。
+        """
+        self._popup.hide()
+        super().hideEvent(event)
+
 
 class _WordListPopup(QFrame):
     """WordListComboBox 的自定义弹出层。"""
@@ -286,6 +301,10 @@ class _WordListPopup(QFrame):
         layout.addWidget(self.list_widget)
 
     def open_for_combo(self):
+        if not self._combo.isVisible():
+            # 页面已切走（或工具栏被收起）：不弹。Qt::Popup 是独立顶层窗，
+            # 在隐藏的页面上弹出来，就是在用户正看着的那一页上闪一下。
+            return
         entries = [
             (self._combo.itemText(i), self._combo.itemData(i))
             for i in range(self._combo.count())

@@ -208,6 +208,7 @@ Things that are easy to get wrong here:
 - **专攻 supports single-step undo (`_undo_drill` / `btn_drill_undo`)**: restores the word's previous `(state, drill_rounds)` and decrements today's `vocab_drilled` activity count (`delta=-1`).
 - **Shortcuts use `Qt.WindowShortcut` scoped to page visibility**: enabled in `showEvent` and disabled in `hideEvent` so `1`/`2`/`3`/`Space`/`Ctrl+Z`/`R` trigger reliably anywhere on the page without requiring a click on the word label first, while never leaking to other tabs.
 - **Clicking outside clears editor focus and label selection**: `VocabView` installs an app-level `eventFilter` to clear `QTextEdit`/`QLineEdit` focus and `QLabel` (`TextSelectableByMouse`) selection when clicking blank card/page areas. Always guard `eventFilter` against re-entrancy (`_in_event_filter`) and disconnect on `destroyed` so multiple `MainWindow` instances in tests do not hit deleted C++ wrappers.
+- **`_WordListPopup` 是 `Qt.Popup` 顶层窗，跨页悬浮靠 `hideEvent` 兜底**（fixed 2026-10-11）。它挂在 `combo_list` 上但不是普通子控件：P1 藏进 `QStackedWidget` 时它不跟着隐藏，会浮在内容岛上直到下一次弹层外点击——表现为"Ctrl+1 切到今日学习，词表弹层在首页闪一下""点进待办输入框那一下把它关掉，像添加待办时闪"。所以 `WordListComboBox.hideEvent` 显式 `hide()` 弹层，`open_for_combo()` 里 combo 不可见则不弹。给 `combo_list` 加任何会隐藏工具栏的行为时，这条兜底都在；全项目另一个 `Qt.Popup` 不存在（各 `QMenu` 都是 `exec()` 模态，用不着）。
 
 ### P2 影子跟读的录音与混音
 

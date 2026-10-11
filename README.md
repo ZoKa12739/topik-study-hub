@@ -70,9 +70,9 @@ ui/
   components.py       EmptyState / Banner / InlineProgress / Toast
   *_view.py           六个页面
 docs/
-  PRODUCT_SPEC.md     权威产品规格 v1.17（功能、页面、数据模型、决策 D1–D16、路线图）
+  PRODUCT_SPEC.md     权威产品规格（功能、页面、数据模型、决策 D1–D16、路线图）
 design/
-  DESIGN.md           权威视觉规格 v1.8（色板 / 字号 / 间距 token，Linear 派生的 10 条规则）
+  DESIGN.md           权威视觉规格（色板 / 字号 / 间距 token，Linear 派生的 10 条规则）
 USER_CONTEXT.md       实际学习投入时间统计规范与原则
 samples/              合成测试夹具：100 词 TSV、中韩对照文本各一份
 tests/                单元测试套件（周回顾、P0 指标等，共 33 项）

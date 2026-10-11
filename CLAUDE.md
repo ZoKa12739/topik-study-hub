@@ -8,14 +8,14 @@ A local-first desktop toolkit for TOPIK Korean exam prep: PySide6 GUI, SQLite pe
 
 All user-facing strings are **Chinese**, and so are the docs. Keep code identifiers and comments in English.
 
-This repository is version-controlled and published at <https://github.com/ZoKa12739/topik-study-hub> (`main`, public). Commit changes as you go, and keep the docs below in sync when behavior changes. **`data/` is gitignored** — the database, audio library and recordings are *not* versioned, so a destructive mistake there is still unrecoverable: be deliberate about overwriting anything under `data/`.
+This repository is version-controlled and published at <https://github.com/ZoKa12739/topik-study-hub> (`main`, public). Commit changes as you go. **`data/` is gitignored** — the database, audio library and recordings are *not* versioned, so a destructive mistake there is still unrecoverable: be deliberate about overwriting anything under `data/`.
 
 ### Two plans, and which one is authoritative
 
 | File | Role |
 |---|---|
-| `docs/PRODUCT_SPEC.md` | **Authoritative product spec** (v1.17). Features, pages, data model, decisions D1–D16, 8-phase roadmap in ch.10 |
-| `design/DESIGN.md` | **Authoritative visual spec** (v1.8). Color/type/spacing tokens, the 10 Linear-derived rules, D-1…D-5 stages, known gotchas |
+| `docs/PRODUCT_SPEC.md` | **Authoritative product spec**. Features, pages, data model, decisions D1–D16, 8-phase roadmap in ch.10 |
+| `design/DESIGN.md` | **Authoritative visual spec**. Color/type/spacing tokens, the 10 Linear-derived rules, D-1…D-5 stages, known gotchas |
 | `USER_CONTEXT.md` | **Study time recording spec**. Requirements and principles for active study time vs app runtime tracking |
 | `docs/Toolkit_Design_Proposal.md` | The original outline. Historical — superseded by `PRODUCT_SPEC.md` |
 | `docs/task_plan.md` | Task plan and milestone records |
@@ -87,18 +87,28 @@ or stop and report the overlap. Same rule for commits that delete code: the blas
 the message — `d4d4abb` ("fix UI visuals") dropped position persistence and `3b8e81c` ("fix inverted
 icons") deleted ~1,600 lines of tests, and nothing caught either.
 
-**CLAUDE.md and the data-model parts of `PRODUCT_SPEC` stay accurate — a wrong note there misleads
-every future session.** So: **a behavior change carries its spec update in the same commit.** If a
-commit adds, removes or changes what the tool does, that same commit updates the affected
-`PRODUCT_SPEC` rows, bumps its version with a one-line 修订 entry, and refreshes the version
-references in `AGENTS.md` and `README.md`. Do not defer documentation to "when a phase closes" or
-"when the owner asks" — both triggers have already failed once: the Anki removal and the
-position-persistence removal landed on 2026-10-09, two days *after* the last phase-close sync, and
-`PRODUCT_SPEC` then spent three days claiming a feature with zero references in the code.
+**`CLAUDE.md` and the data-model parts of `PRODUCT_SPEC` stay accurate — a wrong note there misleads
+every future session.** The operational rule lives in `AGENTS.md` ("Docs follow recorded intent, not
+code churn"); this section is only the reasoning and the evidence behind it.
 
-`DESIGN.md` and the per-page narrative sections may still lag; that is accepted. For a pure factual
-error use an inline `〔vX.Y 更正〕` tag (the convention set in §3's v1.7 correction) rather than
-bumping the design version.
+Why intent, not code churn: all three real drift events were intent changes wearing ordinary
+clothes. The Anki export and the position-persistence removal both landed on 2026-10-09 inside
+commits that read like fixes, and `PRODUCT_SPEC` spent three days claiming a feature with zero
+references in the code; v1.13 then had to follow up because v1.12's own doc left a `0:00` reading
+that contradicted the intent of 「继续上次」. In the other direction, the v1.15 lazy-loading change
+deleted almost no features but rewrote the §9.1 warm-start target — a *recorded constraint* is
+exactly what a code-churn test misses. Internal rewrites never qualify on their own: the spec
+records what the product does, not how.
+
+When in doubt, the agent finishes the code task and reports the doubt rather than blocking on it
+or guessing: auto-widening records intent changes that never happened, auto-narrowing loses real
+ones, and reporting costs nothing.
+
+The two-row log convention defined in `PRODUCT_SPEC`'s header exists because of this asymmetry —
+intent changes must surface as version bumps, while corrections that change no intent must not
+inflate the version. The dated row is the written-form sibling of the inline `〔vX.Y 更正〕` tag
+already sanctioned for `DESIGN.md`. `DESIGN.md` and the per-page narrative sections may still lag;
+that is accepted.
 
 ### The offscreen check cannot validate fonts or typography
 

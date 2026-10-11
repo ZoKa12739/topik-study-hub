@@ -644,6 +644,63 @@ QPushButton#taskDeleteButton:hover {{
     color: #B4342B;
 }}
 
+/* P0 右侧「待办清单」池（v1.18）：列表与任务列表同款；提升按钮、清除按钮各自一组 */
+
+QListWidget#backlogList {{
+    background: transparent;
+    border: none;
+    outline: 0;
+}}
+
+QListWidget#backlogList::item {{
+    padding: 2px 4px;
+    margin: 0;
+    border: none;
+    border-radius: 6px;
+}}
+
+QListWidget#backlogList::item:selected {{
+    background: transparent;
+}}
+
+/* 「→ 今天」：与删除按钮同尺寸的幽灵方块，hover 不用 danger 红——它是建设性动作 */
+QPushButton#taskPromoteButton {{
+    background: transparent;
+    border: 1px solid transparent;
+    border-radius: 6px;
+    color: #98A29C;
+    font-size: 13px;
+    font-weight: 400;
+    padding: 0px;
+    min-width: 24px;
+    max-width: 24px;
+    min-height: 24px;
+    max-height: 24px;
+}}
+
+QPushButton#taskPromoteButton:hover {{
+    background: #EDF1EC;
+    border-color: #DDE5DE;
+    color: #2A322D;
+}}
+
+/* 「清除已完成」：标题行右侧的文字幽灵按钮，仅在池子里有已完成条目时出现 */
+QPushButton#backlogClearButton {{
+    background: transparent;
+    border: 1px solid transparent;
+    border-radius: 6px;
+    color: #738278;
+    font-size: 13px;
+    font-weight: 400;
+    padding: 2px 8px;
+}}
+
+QPushButton#backlogClearButton:hover {{
+    background: #EDF1EC;
+    border-color: #DDE5DE;
+    color: #2A322D;
+}}
+
 /* ---------- P2 影子跟读：全出血阅读区与透明边框控制栏 ---------- */
 
 QFrame#shadowingToolbar {{

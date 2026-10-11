@@ -1,7 +1,8 @@
 """P0 今日学习（`PRODUCT_SPEC` 4.1）。
 
-四个指标、两张补充卡、一块本周概览，读数全部来自现成的表——**这一页不产生任何记录**，
-它是活动日志与几张进度表的读数面（5.1 的闭环里，它是"③ 回顾"的落点）。
+四个指标、两张补充卡、一块本周概览、一栏待办清单，读数全部来自现成的表——除任务
+（今日任务与待办池）外这一页不产生任何记录，它是活动日志与几张进度表的读数面
+（5.1 的闭环里，它是"③ 回顾"的落点）。
 
 因此有一件事必须做对：**每次进入这一页都要重读**。别的页面刚写进去的记录，要让回到首页
 这一下就看见（5.3：「数值实时更新（或每次进入 P0 时刷新）」），所以刷新挂在 `showEvent`
@@ -11,6 +12,7 @@
 from datetime import date, datetime
 
 from PySide6.QtCore import QSize, Qt, Signal
+from PySide6.QtGui import QFontMetrics
 from PySide6.QtWidgets import (
     QCheckBox,
     QFrame,
@@ -23,7 +25,8 @@ from PySide6.QtWidgets import (
     QWidget,
 )
 
-from ui.components import GhostInputRow, MicroPill, StatusDot
+from core.database import BACKLOG_DUE_DATE
+from ui.components import GhostInputRow, MicroPill, StatusDot, show_toast
 from ui.icons import icon
 from ui.style import restyle
 from ui.theme import TEXT_COLORS
@@ -52,9 +55,17 @@ RECORD_BAR_TARGETS = {
     "vocab_drilled": "vocab",
 }
 
-# H4 侧栏的宽度。《列表名》第 N 段 / 曲目名 / 已过 320 / 1400 / N 待专攻
-# 都要能折行放下，比 240px 的全局侧边栏宽一档。
-SIDE_COLUMN_WIDTH = 300
+# P0 右栏「待办清单」的固定宽度（v1.18，`PRODUCT_SPEC` 4.1 H4 侧栏）。
+# 300px：比 220px 的全局侧边栏宽一档，扣掉右栏自身边距（16+24）与行上两个 24px
+# 按钮后标题还有约 178px——一行短标题刚好，更长的按 CJK 逐字折行（见 `_wrap_cjk`）。
+# 主列由此从约 900px 收到约 590px，所以窗口最小宽度从 980 上调到 1120
+# （`ui/main_window.py` 的 `setMinimumSize`）：再窄，「继续上次」行的标题加胶囊
+# 就放不下了。
+BACKLOG_PANE_WIDTH = 300
+
+# 待办行里复选框标题的可用宽度。算式：栏宽 300 − 右栏边距 40 − 列表项内边距 8
+# − 行内边距 12 − 删除按钮 24 − 按钮间距 4 − 复选框指示器约 24。
+BACKLOG_TITLE_WIDTH = BACKLOG_PANE_WIDTH - 112
 
 
 class DayCell(QFrame):
@@ -197,10 +208,31 @@ class PlannerView(QWidget):
         heading.addWidget(self.countdown_card, 0, Qt.AlignVCenter)
         layout.addWidget(header_pane)
 
+        # 中部横排（v1.18）：左列是日粒度的任务流（今日任务卡 + 今日已自动记录条），
+        # 右列是常驻的「待办清单」池。两列之间 1px 竖线（复用指标带里的
+        # #stripDivider——它本来就是 max-width: 1px 的竖线规则，不必新增 QSS）。
+        # 「今日已记录」条留在左列：v1.10 裁定它必须一行放得下，缩进 300px 的
+        # 右栏后会折行，所以它不属于右侧。
+        middle = QWidget()
+        middle_row = QHBoxLayout(middle)
+        middle_row.setContentsMargins(0, 0, 0, 0)
+        middle_row.setSpacing(0)
+
+        main_column = QWidget()
+        main_col_layout = QVBoxLayout(main_column)
+        main_col_layout.setContentsMargins(0, 0, 0, 0)
+        main_col_layout.setSpacing(0)
         # 主体任务流去壳直铺大白板；「继续上次」作为置顶数据行汇入任务列表
-        layout.addWidget(self._build_task_card(), 1)
+        main_col_layout.addWidget(self._build_task_card(), 1)
         self.record_card = self._build_record_bar()
-        layout.addWidget(self.record_card)
+        main_col_layout.addWidget(self.record_card)
+        middle_row.addWidget(main_column, 1)
+
+        middle_row.addWidget(self._make_strip_divider())
+
+        self.backlog_pane = self._build_backlog_pane()
+        middle_row.addWidget(self.backlog_pane, 0)
+        layout.addWidget(middle, 1)
 
         # 1px 贯穿横线分割任务流与本周回顾
         layout.addWidget(self._make_pane_divider())
@@ -282,6 +314,62 @@ class PlannerView(QWidget):
         self.resume_card = self._build_resume_card()
         task_layout.addWidget(self.resume_card)
         return task_card
+
+    def _build_backlog_pane(self):
+        """P0 右栏「待办清单」（v1.18）：无日期的任务池。
+
+        池与左栏今日任务是**同一张表、同一个体系**：区别只有 `due_date` 是不是
+        `BACKLOG_DUE_DATE`（''）。所以这里做的每件事都尽量薄：
+        - 输入回车 → `add_task(title, '')`，只进池子，今日任务查不到；
+        - 行首日历按钮 → `promote_task(id)`，只改一个 `due_date`，该条随即出现在
+          左栏今日任务顶部——"什么时候做"由用户自己点，不做到期自动进来；
+        - 勾选 → 与今日任务共用 `toggle_task`，照写 `completed_at`。连续学习、
+          本周进度、周回顾的"完成任务"与「累计完成」因此一视同仁，不为池子
+          开任何特殊分支（所有者裁定）。
+
+        池子不会像今日任务那样隔天自清洁，所以要有「清除已完成」。
+        """
+        pane = QWidget()
+        pane.setFixedWidth(BACKLOG_PANE_WIDTH)
+        pane_layout = QVBoxLayout(pane)
+        pane_layout.setContentsMargins(16, 16, 24, 12)
+        pane_layout.setSpacing(8)
+
+        header = QHBoxLayout()
+        section = QLabel("待办清单")
+        section.setObjectName("sectionTitle")
+        header.addWidget(section)
+        header.addStretch()
+        self.backlog_count = QLabel()
+        self.backlog_count.setObjectName("muted")
+        header.addWidget(self.backlog_count)
+        # 仅在池子里有已完成条目时出现（见 `_refresh_backlog`）
+        self.backlog_clear = QPushButton("清除已完成")
+        self.backlog_clear.setObjectName("backlogClearButton")
+        self.backlog_clear.setCursor(Qt.PointingHandCursor)
+        self.backlog_clear.clicked.connect(self.clear_completed_backlog)
+        header.addWidget(self.backlog_clear)
+        pane_layout.addLayout(header)
+
+        self.backlog_input_row = GhostInputRow(
+            "把想做的事记下来，按回车添加",
+            glyph="plus",
+        )
+        self.backlog_input = self.backlog_input_row.line_edit
+        self.backlog_input.returnPressed.connect(self.add_backlog_task)
+        pane_layout.addWidget(self.backlog_input_row)
+
+        self.backlog_empty_label = QLabel("还没有待办。把后面想做的事记下来吧。")
+        self.backlog_empty_label.setObjectName("muted")
+        self.backlog_empty_label.setAlignment(Qt.AlignCenter)
+        self.backlog_empty_label.setWordWrap(True)
+        pane_layout.addWidget(self.backlog_empty_label)
+
+        self.backlog_list = QListWidget()
+        self.backlog_list.setObjectName("backlogList")
+        self.backlog_list.setMinimumHeight(80)
+        pane_layout.addWidget(self.backlog_list, 1)
+        return pane
 
     def _build_resume_card(self):
         container = QWidget()
@@ -372,6 +460,7 @@ class PlannerView(QWidget):
         self._refresh_resume(self.database.resume_context())
         self._refresh_week(stats)
         self._refresh_tasks()
+        self._refresh_backlog()
 
     def showEvent(self, event):
         """每次进入这一页都重读（5.3：「数值实时更新（或每次进入 P0 时刷新）」）。
@@ -641,6 +730,60 @@ class PlannerView(QWidget):
             self.task_list.addItem(item)
             self.task_list.setItemWidget(item, row)
 
+    def _refresh_backlog(self):
+        self.backlog_list.clear()
+        tasks = self.database.backlog_tasks()
+        self.backlog_count.setText(f"{len(tasks)} 项")
+        self.backlog_empty_label.setVisible(not tasks)
+        self.backlog_list.setVisible(bool(tasks))
+        # 没有已完成条目时不显示清理按钮——与"条与卡没有内容时整块隐藏"同一条纪律
+        self.backlog_clear.setVisible(any(task["completed"] for task in tasks))
+        for task in tasks:
+            item = QListWidgetItem()
+            row = QWidget()
+            row_layout = QHBoxLayout(row)
+            row_layout.setContentsMargins(6, 2, 6, 2)
+            row_layout.setSpacing(4)
+
+            # 「→ 今天」：把这条无日期待办提到当天。已完成的条目没有提升的意义，
+            # 按钮直接不画。
+            promote_button = QPushButton()
+            promote_button.setObjectName("taskPromoteButton")
+            promote_button.setIcon(icon("calendar", TEXT_COLORS["faint"], 14))
+            promote_button.setToolTip("放到今天")
+            promote_button.setCursor(Qt.PointingHandCursor)
+            promote_button.setVisible(not task["completed"])
+            promote_button.clicked.connect(
+                lambda _, task_id=task["id"]: self.promote_backlog_task(task_id)
+            )
+            row_layout.addWidget(promote_button, 0, Qt.AlignVCenter)
+
+            # 栏宽只有 300px，复选框标题按 CJK 逐字折行（`_wrap_cjk`）；折几行，
+            # 行高就多几个字高。
+            checkbox = QCheckBox()
+            checkbox.setChecked(bool(task["completed"]))
+            checkbox.toggled.connect(
+                lambda checked, task_id=task["id"]: self.toggle_task(task_id, checked)
+            )
+            metrics = QFontMetrics(checkbox.font())
+            title = _wrap_cjk(task["title"], metrics, BACKLOG_TITLE_WIDTH)
+            checkbox.setText(title)
+            row_layout.addWidget(checkbox, 1, Qt.AlignVCenter)
+
+            delete_button = QPushButton()
+            delete_button.setObjectName("taskDeleteButton")
+            delete_button.setIcon(icon("x", TEXT_COLORS["faint"], 14))
+            delete_button.setToolTip("删除待办")
+            delete_button.clicked.connect(
+                lambda _, task_id=task["id"]: self.delete_backlog_task(task_id)
+            )
+            row_layout.addWidget(delete_button, 0, Qt.AlignVCenter)
+
+            lines = title.count("\n") + 1
+            item.setSizeHint(QSize(0, 34 + (lines - 1) * metrics.height()))
+            self.backlog_list.addItem(item)
+            self.backlog_list.setItemWidget(item, row)
+
     # ---- 任务 ----
 
     def add_task(self):
@@ -660,10 +803,56 @@ class PlannerView(QWidget):
         self.database.delete_task(task_id)
         self.refresh()
 
+    # ---- 待办清单（右栏池，v1.18）----
+
+    def add_backlog_task(self):
+        title = self.backlog_input.text().strip()
+        if not title:
+            self.backlog_input.setFocus()
+            return
+        self.database.add_task(title, BACKLOG_DUE_DATE)
+        self.backlog_input.clear()
+        self.refresh()
+
+    def promote_backlog_task(self, task_id):
+        """「→ 今天」：只改 `due_date`，该条随即出现在左栏今日任务顶部。"""
+        self.database.promote_task(task_id)
+        self.refresh()
+
+    def delete_backlog_task(self, task_id):
+        self.database.delete_task(task_id)
+        self.refresh()
+
+    def clear_completed_backlog(self):
+        removed = self.database.clear_completed_backlog()
+        self.refresh()
+        if removed:
+            show_toast(self.window(), f"已清除 {removed} 项已完成的待办")
+
 
 def _amount_text(record):
     """`24 分钟` / `15 个`。单位存在 `unit` 里（5.2 的"记录内容"）。"""
     return f"{record['amount']} {record['unit'] or ''}".strip()
+
+
+def _wrap_cjk(text, metrics, available):
+    """按 CJK 逐字折行，返回带 `\n` 的标题（`QCheckBox` 不会自动折行，只能手断）。
+
+    300px 的待办栏里标题只有约 178px：短标题一行放下，长的按字断开——中文按字
+    断无损可读性；英文没空格也按字断，个人工具里极少出现，不值得为它引入整词
+    折行算法。放不下一行的判定与断点用同一份 `metrics`，行高估算因此不会偏。
+    """
+    if metrics.horizontalAdvance(text) <= available:
+        return text
+    parts, current = [], ""
+    for char in text:
+        if current and metrics.horizontalAdvance(current + char) > available:
+            parts.append(current)
+            current = char
+        else:
+            current += char
+    parts.append(current)
+    return "\n".join(parts)
 
 
 def _clear_layout(layout):

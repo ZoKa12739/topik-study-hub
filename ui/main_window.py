@@ -246,7 +246,7 @@ class MainWindow(QMainWindow):
         self.database = StudyDatabase()
         self.setWindowTitle("TOPIK Study Hub")
         self.resize(1180, 760)
-        self.setMinimumSize(980, 650)
+        self.setMinimumSize(1120, 650)
         self.init_ui()
 
     def init_ui(self):

@@ -63,6 +63,12 @@ WORD_STATES = ("known", "fuzzy", "unknown")  # 认识 / 模糊 / 不认识
 # 显示名在视图层（`ui/shadowing_view.py` 的 TRACK_STATUS_LABELS）。
 TRACK_STATES = ("listening", "done")  # 在听 / 已磕完
 
+# 「待办清单」池在 `tasks` 里的 `due_date` 取值。该列是 NOT NULL，所以用空串而不是
+# NULL 表示"无日期"——空串永远不等于任何 ISO 日期，于是今日任务（`due_date = 今天`）
+# 与待办池（`due_date = ''`）天然互不相见：零迁移、零特殊分支。用户点「→ 今天」时
+# 只改这一个字段，该条随即进入今日任务（P0 待办清单，PRODUCT_SPEC v1.18）。
+BACKLOG_DUE_DATE = ""
+
 # 第二层数据表（6.1）。导出/导入只处理这些；第一层（words/word_lists/materials）
 # 可从源文件重建，不进导出（6.5："不导出可重建的第一层数据"）。
 SECOND_LAYER_TABLES = (
@@ -871,10 +877,16 @@ class StudyDatabase:
             (today,),
         ).fetchall()
 
-    def add_task(self, title):
+    def add_task(self, title, due_date=None):
+        """新建任务。`due_date` 缺省为今天；传 `BACKLOG_DUE_DATE`（`''`）建的条目
+        属于「待办清单」池——无日期，今日任务的查询看不见它，直到用户点「→ 今天」
+        （`promote_task`）把它提到当天。
+        """
+        if due_date is None:
+            due_date = date.today().isoformat()
         cursor = self.connection.execute(
             "INSERT INTO tasks (title, due_date) VALUES (?, ?)",
-            (title.strip(), date.today().isoformat()),
+            (title.strip(), due_date),
         )
         self.connection.commit()
         return cursor.lastrowid
@@ -890,6 +902,38 @@ class StudyDatabase:
     def delete_task(self, task_id):
         self.connection.execute("DELETE FROM tasks WHERE id = ?", (task_id,))
         self.connection.commit()
+
+    # ---- 「待办清单」池（P0 右侧栏，PRODUCT_SPEC v1.18）----
+    #
+    # 池与今日任务是同一张表、同一个体系：区别只有 `due_date` 是不是 ''。
+    # 所以勾选一条待办会照常写 `completed_at`——连续学习、本周进度、周回顾的
+    # "完成任务"与「累计完成」都按同一个口径把它算进去，不为池子开特殊分支
+    # （所有者 2026-10-11 裁定：一视同仁）。
+
+    def backlog_tasks(self):
+        """待办池全部条目，完成态沉底（与 `today_tasks()` 同一排序式）。"""
+        return self.connection.execute(
+            "SELECT id, title, completed FROM tasks WHERE due_date = ? "
+            "ORDER BY completed, COALESCE(sort_order, id), id DESC",
+            (BACKLOG_DUE_DATE,),
+        ).fetchall()
+
+    def promote_task(self, task_id):
+        """把待办池里的一条「放到今天」：只改 `due_date`，其余字段原样不动。"""
+        self.connection.execute(
+            "UPDATE tasks SET due_date = ? WHERE id = ?",
+            (date.today().isoformat(), task_id),
+        )
+        self.connection.commit()
+
+    def clear_completed_backlog(self):
+        """清掉待办池里已完成的任务，返回清除条数。今日任务的已完成条目不受影响。"""
+        cursor = self.connection.execute(
+            "DELETE FROM tasks WHERE due_date = ? AND completed = 1",
+            (BACKLOG_DUE_DATE,),
+        )
+        self.connection.commit()
+        return cursor.rowcount
 
     def record_activity(self, activity_type, amount=1, note=None, unit=None,
                         ref_type=None, ref_id=None):

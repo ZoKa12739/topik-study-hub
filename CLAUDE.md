@@ -137,7 +137,7 @@ Pages sit in a `QStackedWidget`. Indices **0–4** are the five module views, wh
 | `ui/components.py` | `EmptyState`, `Banner`, `InlineProgress`, `Toast` / `show_toast()` |
 | `core/audio.py` | P2 audio-library filesystem side — `copy_into_library()` (`.part` + `os.replace` atomic), `content_hash()`, `disk_report()`, `delete_from_library()` (path-escape guarded). Writes only into `data/audio/`, never the user's source files, and **never touches sqlite** |
 | `core/tts.py` | P1 单词发音 — `clean_korean_for_tts()`, Azure/Google synthesis + `data/tts/` cache, `WordSpeaker` (cache → background fetch → offline `QTextToSpeech` fallback), plus `TTSNetworkProbeWorker` / `BatchTTSPreloadWorker` / `_TTSFetchWorker`. Also **never touches sqlite** |
-| `ui/planner_view.py` | P0 今日学习 — 四个指标、两张补充卡、本周概览；**只读现成的表，自身不产生任何记录**（见 *P0 今日学习的四个数*） |
+| `ui/planner_view.py` | P0 今日学习 — 四个指标、两张补充卡、本周概览、右栏待办清单池；除任务（今日任务与待办池的增删改、`due_date` 提升）外**只读现成的表，自身不产生任何活动记录**（见 *P0 今日学习的四个数*） |
 | `core/library.py` | P3 filesystem scan — `scan_material()`, `ScanWorker` (Qt thread), `pdf_page_count()`; plus `delete_file()` (recycle bin). The **scan** produces records only and writes nothing |
 | `core/snippets.py` | P4 snippet sources — `IMAGE_EXTS`, `collect_records()` (merges P3's index snapshot with a `scandir` of `data/snippets/`), `copy_image_into()` / `unique_destination()`. Produces records only; **writes nothing** |
 | `ui/assets/check.svg` | The one icon that must be a real file (QSS `image:` takes no data URI). **Not the only asset**: `ui/assets/app_icon.png` + `app_icon.ico` are the window/taskbar icons, loaded by `main.py` / `main_window.py` via `QPixmap` |
@@ -175,6 +175,15 @@ Pages sit in a `QStackedWidget`. Indices **0–4** are the five module views, wh
   （只有整洁收益的数据迁移不做）。
 - **`activity_log` 里 `material_opened` 与 `task_completed` 语义不同**：前者按天按文件去重、
   `amount` 累加次数；后者**根本不写活动日志**，连续学习与累计完成读的是 `tasks.completed_at`。
+- **右栏「待办清单」是同一个 `tasks` 表的第二个视图**（v1.18，`PRODUCT_SPEC` v1.18）。池条目的
+  `due_date` 是**空串**（`BACKLOG_DUE_DATE`，不是 NULL——列是 NOT NULL，而空串永远不等于任何
+  ISO 日期），于是"查当日"与"查池子"互不相见，**零迁移、零特殊 SQL**。「→ 今天」只
+  `UPDATE due_date`。勾选池条目照写 `completed_at`：`_has_study`、周回顾、`累计完成`全部
+  一视同仁，**不为池子开任何特殊分支**（所有者 2026-10-11 裁定）——想改这条口径，动的
+  是四个查询而不是一个标记位。池子不隔天自清洁，「清除已完成」因此必要（仅在有已完成
+  条目时出现）。页面上这两栏的分界看 `BACKLOG_PANE_WIDTH` 的注释；主列变窄到约 590px，
+  所以 `MainWindow` 最小宽度 980 → **1120**，再把「继续上次」行的标题 + 胶囊挤到折行
+  就不值了。
 
 ### P1 单词仓的三个模式
 

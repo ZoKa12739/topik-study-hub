@@ -375,6 +375,9 @@ class VocabView(QWidget):
 
         self._batch_tts_worker = None
         self._batch_list_id = None
+        # 后台下载队列：同一时刻只跑一条下载，但它**不属于当前选中的词表**——
+        # 切词表不打断，导入新词表自动开始，已在跑时再点别表是排队而非抢占。
+        self._tts_queue = []
 
         self.init_ui()
         self.refresh_lists()
@@ -1278,6 +1281,11 @@ class VocabView(QWidget):
 
         self.set_mode(self.MODE_BROWSE)
         self.refresh_lists()
+
+        # 先决定要不要自动下载，再切选择器。反序会让 _on_list_changed 先弹一次
+        # "是否下载发音"的提示，紧接着又被下载进度顶掉——只闪一下就没有了。
+        tts_note = self._maybe_auto_start_tts(result["list_id"])
+
         index = self.combo_list.findData(result["list_id"])
         if index >= 0:
             self.combo_list.setCurrentIndex(index)
@@ -1288,6 +1296,7 @@ class VocabView(QWidget):
             message += f"，跳过 {skipped} 行（列数不足或没有韩文）"
         if result["reused"]:
             message += "。这是重新导入，历史笔记、状态与过词断点均已保留。"
+        message += tts_note
         self.banner.show_message("success", message)
 
     def delete_current_list(self, target_list_id=None):
@@ -1334,6 +1343,13 @@ class VocabView(QWidget):
 
         # 词表没了，它的断点与专攻队列也就无从谈起。`refresh_lists` 屏蔽了信号，
         # 所以 `set_mode` 必须显式再调一次——否则页面会停在已删词表的过词卡上。
+        # 先处理后台下载：正在下载/排队的正是被删的这份时，词都没了，下载没有意义。
+        if removed is not None:
+            if self._batch_list_id == list_id and self._tts_busy():
+                self._cancel_batch_tts_preload()
+            elif list_id in self._tts_queue:
+                self._tts_queue.remove(list_id)
+                self._sync_batch_tts_button(self.current_list_id())
         self.refresh_lists()
         if was_current or self.current_list_id() is None:
             self.set_mode(self.MODE_BROWSE)
@@ -1515,10 +1531,52 @@ class VocabView(QWidget):
         list_id = self.current_list_id()
         if list_id is None:
             return
-        if self._batch_tts_worker and self._batch_tts_worker.isRunning():
-            self._cancel_batch_tts_preload()
+        if self._tts_busy():
+            if self._batch_list_id == list_id:
+                self._cancel_batch_tts_preload()
+            elif list_id in self._tts_queue:
+                # 再点一次排队中的本表 = 取消排队
+                self._tts_queue.remove(list_id)
+                self.banner.show_message("info", f"《{self._list_name(list_id)}》已取消排队。")
+                self._banner_action = None
+                self._sync_batch_tts_button(list_id)
+            else:
+                # 后台在下载**别的**词表：点本表是排到队尾，不是抢占——抢占就是
+                # 用户报过的"切个词表，原来那个下载就没了"
+                self._enqueue_tts_preload(list_id)
         else:
             self._start_batch_tts_preload(list_id)
+
+    def _tts_busy(self):
+        return self._batch_tts_worker is not None and self._batch_tts_worker.isRunning()
+
+    def _online_tts_enabled(self):
+        """批量预缓存整套入口的闸：P5 显式开了联网发音才出现（D11：默认关闭、逐项开启）。"""
+        return self.database.get_tts_mode() == "online"
+
+    def _list_name(self, list_id):
+        for row in self.database.list_word_lists():
+            if row["id"] == list_id:
+                return row["name"]
+        return ""
+
+    def _uncached_count(self, list_id):
+        words_data = self.database.list_words(list_id)
+        if not words_data:
+            return 0
+        voice = self.database.get_tts_voice()
+        return count_uncached_words([row["korean"] for row in words_data], voice)
+
+    def _batch_tts_tooltip(self, list_id):
+        base = "预先下载本表全部未缓存的发音音频，以便完全离线使用"
+        if not self._tts_busy():
+            return base
+        if self._batch_list_id == list_id:
+            return "正在后台下载本表发音，点击停止；切换到别的词表也不会中断"
+        name = self._list_name(self._batch_list_id) or "别的词表"
+        if list_id in self._tts_queue:
+            return f"已排入下载队列（当前在后台下载《{name}》），点击取消排队"
+        return f"后台正在下载《{name}》，点击把本表排到队尾（不会中断当前下载）"
 
     def _sync_batch_tts_button(self, list_id):
         if not hasattr(self, "btn_batch_tts"):
@@ -1529,53 +1587,60 @@ class VocabView(QWidget):
         # 批量预缓存是**联网工作流的一环**：本地模式下整块隐藏——联网默认关闭、
         # 逐项显式开启（PRODUCT_SPEC D11 方案 A）。用户在 P5 显式选了联网音质，
         # 这个下载入口才出现。
-        if self.database.get_tts_mode() != "online":
+        if not self._online_tts_enabled():
             self.btn_batch_tts.setVisible(False)
             return
 
-        self.btn_batch_tts.setVisible(True)
-        if (
-            self._batch_tts_worker is not None
-            and self._batch_tts_worker.isRunning()
-            and self._batch_list_id == list_id
-        ):
+        button = self.btn_batch_tts
+        button.setVisible(True)
+        button.setToolTip(self._batch_tts_tooltip(list_id))
+
+        if self._tts_busy() and self._batch_list_id == list_id:
+            # 正在下载本表：文案以进度回调为准，但进度还没到（刚启动/启动失败）时
+            # 也得让按钮脱离静态态，不能留着"缓存发音 (N 词未存)"这种过期文案
+            if not button.text().startswith("下载中"):
+                button.setText("下载中…")
+                button.setEnabled(True)
+                button.setIcon(icon("download"))
             return
 
-        words_data = self.database.list_words(list_id)
-        raw_words = [row["korean"] for row in words_data]
-        voice = self.database.get_tts_voice()
-        uncached = count_uncached_words(raw_words, voice)
+        if self._tts_busy():
+            # 后台在下载别的词表：本表只能排队（点一下入队，再点取消）
+            if list_id in self._tts_queue:
+                button.setText(f"排队中 · 第 {self._tts_queue.index(list_id) + 1} 位")
+            else:
+                uncached = self._uncached_count(list_id)
+                button.setText(f"排队下载（{uncached} 词未存）" if uncached else "排队下载")
+            button.setEnabled(True)
+            button.setIcon(icon("download"))
+            return
+
+        uncached = self._uncached_count(list_id)
         if uncached == 0:
-            self.btn_batch_tts.setText("发音已全缓存")
-            self.btn_batch_tts.setEnabled(False)
-            self.btn_batch_tts.setIcon(icon("check-circle", STATE_COLORS["success"]))
+            button.setText("发音已全缓存")
+            button.setEnabled(False)
+            button.setIcon(icon("check-circle", STATE_COLORS["success"]))
         else:
-            self.btn_batch_tts.setText(f"缓存发音 ({uncached} 词未存)")
-            self.btn_batch_tts.setEnabled(True)
-            self.btn_batch_tts.setIcon(icon("download"))
+            button.setText(f"缓存发音 ({uncached} 词未存)")
+            button.setEnabled(True)
+            button.setIcon(icon("download"))
 
     def _check_and_prompt_tts_cache(self, list_id):
-        """切换词表时：如当前词表有未缓存单词，自动弹条提示一键触发预缓存。"""
-        if list_id is None:
-            return
-        # 与批量下载按钮同一道闸：只有显式选了联网发音的用户才会被提示去下载
-        # 云端音频（D11：默认关闭、逐项显式开启）。
-        if self.database.get_tts_mode() != "online":
-            return
-        if self._batch_tts_worker is not None and self._batch_tts_worker.isRunning():
-            if self._batch_list_id != list_id:
-                self._cancel_batch_tts_preload()
-            else:
-                return
+        """切换词表时：当前词表有未缓存单词、且没有下载在跑，弹条提示一键开始。
 
-        words_data = self.database.list_words(list_id)
-        if not words_data:
+        已有下载在跑时**不提示**：本表在跑/排队时提示多余；后台在跑别表时提示会和
+        进度横幅打架。排队入口在元信息栏那个按钮上（悬停有说明）。
+
+        曾经的实现在这里 cancel 掉正在跑的下载——正是"切个词表下载就没了"的根因。
+        """
+        if list_id is None or not self._online_tts_enabled():
             return
-        raw_words = [row["korean"] for row in words_data]
-        voice = self.database.get_tts_voice()
-        uncached = count_uncached_words(raw_words, voice)
+        if self._tts_busy() or list_id in self._tts_queue:
+            return
+
+        uncached = self._uncached_count(list_id)
         if uncached > 0:
-            list_name = self.current_list_name()
+            list_name = self._list_name(list_id)
             self.banner.show_message(
                 "info",
                 f"《{list_name}》尚有 {uncached} 个单词未缓存发音，是否提前自动转换？",
@@ -1584,19 +1649,80 @@ class VocabView(QWidget):
             )
             self._banner_action = lambda: self._start_batch_tts_preload(list_id)
 
-    def _start_batch_tts_preload(self, list_id):
+    def _maybe_auto_start_tts(self, list_id):
+        """导入后按需自动开始预下载，返回拼进"已载入"提示的那句话（没启动则空串）。
+
+        只在 P5 显式开了联网发音时才动（D11）。已有下载在跑就排队，不抢占。
+        """
+        if list_id is None or not self._online_tts_enabled():
+            return ""
+        uncached = self._uncached_count(list_id)
+        if uncached == 0:
+            return ""
+        name = self._list_name(list_id)
+        if self._tts_busy():
+            self._enqueue_tts_preload(list_id, announce=False)
+            return (
+                f"。《{name}》有 {uncached} 个未缓存发音，已排入下载队列，"
+                "当前下载完成后自动开始"
+            )
+        if self._start_batch_tts_preload(list_id, auto=True):
+            return f"。《{name}》有 {uncached} 个未缓存发音，已开始后台下载（切词表不会中断）"
+        return ""
+
+    def _enqueue_tts_preload(self, list_id, announce=True):
+        """排进后台下载队列。重复请求（正在跑或已在队里）忽略。"""
         if list_id is None:
-            return
-        self._cancel_batch_tts_preload()
+            return False
+        if list_id == self._batch_list_id or list_id in self._tts_queue:
+            return False
+        self._tts_queue.append(list_id)
+        if announce:
+            ahead = len(self._tts_queue) - 1
+            tail = f"，前面还有 {ahead} 份" if ahead else ""
+            self.banner.show_message(
+                "info",
+                f"《{self._list_name(list_id)}》已排入下载队列{tail}，当前下载完成后自动开始。",
+                action_text="停止",
+                action_icon="x",
+            )
+            self._banner_action = self._cancel_batch_tts_preload
+        self._sync_batch_tts_button(self.current_list_id())
+        return True
+
+    def _start_next_queued_tts(self):
+        """取出队列里下一份还有未缓存词的词表并开始。返回是否真的启动了。"""
+        while self._tts_queue:
+            list_id = self._tts_queue.pop(0)
+            if list_id == self._batch_list_id or not self._list_name(list_id):
+                continue  # 正在跑（不该发生）/ 词表已删
+            if not self._uncached_count(list_id):
+                continue  # 排队期间被别的入口下载完了，别为空跑再起一个线程
+            if self._start_batch_tts_preload(list_id):
+                return True
+        return False
+
+    def _start_batch_tts_preload(self, list_id, auto=False):
+        """开始后台预下载一份词表的发音。
+
+        **不抢占**：已有下载在跑时改为排队。曾经的实现进来就 cancel 前一个，
+        表现为"切个词表 / 导个新词表，原来那个下载就没了"。
+        `auto=True` 表示调用方已经说明了来意（导入完成的提示、队列接力），
+        这里不再重复弹一次"准备中"横幅。
+        """
+        if list_id is None or not self._online_tts_enabled():
+            return False
+        if self._tts_busy():
+            return self._enqueue_tts_preload(list_id, announce=not auto)
 
         words_data = self.database.list_words(list_id)
         if not words_data:
-            return
+            return False
         raw_words = [row["korean"] for row in words_data]
         voice = self.database.get_tts_voice()
         azure_key = self.database.get_azure_speech_key()
         azure_region = self.database.get_azure_speech_region()
-        list_name = self.current_list_name()
+        list_name = self._list_name(list_id)
 
         worker = BatchTTSPreloadWorker(
             raw_words,
@@ -1608,44 +1734,55 @@ class VocabView(QWidget):
         self._batch_tts_worker = worker
         self._batch_list_id = list_id
 
+        # 把 list_id 一起带进回调：后台下载下"正在下载的那一份"和"当前选中的
+        # 那一份"经常不是同一份，按钮与横幅都得按 list_id 说话。
         worker.progress.connect(
-            lambda done, total, word: self._on_batch_tts_progress(done, total, word, list_name)
+            lambda done, total, word: self._on_batch_tts_progress(
+                done, total, word, list_id, list_name
+            )
         )
         worker.finished.connect(
-            lambda downloaded, total: self._on_batch_tts_finished(downloaded, total, list_name)
+            lambda downloaded, total: self._on_batch_tts_finished(
+                downloaded, total, list_id, list_name
+            )
         )
         worker.error.connect(
-            lambda err: self._on_batch_tts_error(err, list_name)
+            lambda err: self._on_batch_tts_error(err, list_id, list_name)
         )
 
-        self.banner.show_message(
-            "info",
-            f"正在预下载《{list_name}》发音：准备中…",
-            action_text="停止",
-            action_icon="x",
-        )
-        self._banner_action = self._cancel_batch_tts_preload
-        if hasattr(self, "btn_batch_tts"):
+        if not auto:
+            queue_note = f"，队列里还有 {len(self._tts_queue)} 份" if self._tts_queue else ""
+            self.banner.show_message(
+                "info",
+                f"正在后台预下载《{list_name}》发音：准备中…"
+                f"（切换到别的词表也会继续{queue_note}）",
+                action_text="停止",
+                action_icon="x",
+            )
+            self._banner_action = self._cancel_batch_tts_preload
+        if hasattr(self, "btn_batch_tts") and self.current_list_id() == list_id:
             self.btn_batch_tts.setText("下载中…")
             self.btn_batch_tts.setEnabled(True)
 
         worker.start()
+        return True
 
-    def _on_batch_tts_progress(self, done, total, word, list_name):
+    def _on_batch_tts_progress(self, done, total, word, list_id, list_name):
         if total <= 0:
             return
         pct = int(done * 100 / total)
+        queue_note = f" · 排队 {len(self._tts_queue)} 份" if self._tts_queue else ""
         self.banner.show_message(
             "info",
-            f"正在预下载《{list_name}》发音：{done}/{total}（{pct}%）· {word}…",
+            f"正在后台预下载《{list_name}》发音：{done}/{total}（{pct}%）· {word}…{queue_note}",
             action_text="停止",
             action_icon="x",
         )
         self._banner_action = self._cancel_batch_tts_preload
-        if hasattr(self, "btn_batch_tts"):
+        if hasattr(self, "btn_batch_tts") and self.current_list_id() == list_id:
             self.btn_batch_tts.setText(f"下载中 {done}/{total}")
 
-    def _on_batch_tts_finished(self, downloaded, total, list_name):
+    def _on_batch_tts_finished(self, downloaded, total, list_id, list_name):
         self._batch_tts_worker = None
         self._batch_list_id = None
         self.banner.show_message(
@@ -1654,34 +1791,49 @@ class VocabView(QWidget):
         )
         self._banner_action = None
         show_toast(self.window(), f"《{list_name}》发音已全部就绪", level="success")
-        list_id = self.current_list_id()
-        if list_id:
-            self._sync_batch_tts_button(list_id)
+        # 队列接力：下一份自动开始，用户不用守在这页
+        self._start_next_queued_tts()
+        self._sync_batch_tts_button(self.current_list_id())
 
-    def _on_batch_tts_error(self, err, list_name):
+    def _on_batch_tts_error(self, err, list_id, list_name):
         self._batch_tts_worker = None
         self._batch_list_id = None
+        dropped = len(self._tts_queue)
+        self._tts_queue.clear()
+        message = f"预下载《{list_name}》发音中断：{err}"
+        if dropped:
+            message += f"。排队中的 {dropped} 份词表一并取消——网络不通时逐个重试只是重复失败"
         self.banner.show_message(
             "warning",
-            f"预下载《{list_name}》发音中断：{err}",
+            message,
             action_text="重试",
             action_icon="refresh",
         )
-        list_id = self.current_list_id()
+        # 重试**失败的那一份**：后台下载下它和"当前选中的词表"经常不是同一份
         self._banner_action = lambda: self._start_batch_tts_preload(list_id)
-        if list_id:
-            self._sync_batch_tts_button(list_id)
+        self._sync_batch_tts_button(self.current_list_id())
 
     def _cancel_batch_tts_preload(self):
+        name = ""
         if self._batch_tts_worker is not None and self._batch_tts_worker.isRunning():
+            name = self._list_name(self._batch_list_id) if self._batch_list_id else ""
             self._batch_tts_worker.cancel()
             self._batch_tts_worker.wait(1500)
+        dropped = len(self._tts_queue)
         self._batch_tts_worker = None
         self._batch_list_id = None
-        self.banner.clear()
-        list_id = self.current_list_id()
-        if list_id:
-            self._sync_batch_tts_button(list_id)
+        self._tts_queue.clear()
+
+        if name or dropped:
+            # "停止"是用户点下来的，得告诉他停的是什么、顺带取消了哪些排队
+            message = f"已停止《{name}》的发音预下载。" if name else "已停止发音预下载。"
+            if dropped:
+                message += f"排队中的 {dropped} 份词表一并取消。"
+            self.banner.show_message("info", message)
+            self._banner_action = None
+        else:
+            self.banner.clear()
+        self._sync_batch_tts_button(self.current_list_id())
 
     def _show_browse_empty(self, list_id):
         if list_id is None:

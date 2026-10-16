@@ -58,14 +58,15 @@ def collect_records(material_rows, existing, snippets_dir=SNIPPETS_DIR):
         if not is_image(row["name"]):
             continue
         path = row["path"]
+        if row.get("missing") or not os.path.isfile(path):
+            continue
         seen_in_materials.add(path)
         subject = row.get("subject") or ""
-        missing = bool(row.get("missing"))
         known = existing.get(path)
-        if known is not None and known["source_subject"] == subject and bool(known["missing"]) == missing:
+        if known is not None and known["source_subject"] == subject and not known["missing"]:
             continue
         records.append(
-            {"path": path, "name": row["name"], "source_subject": subject, "missing": missing}
+            {"path": path, "name": row["name"], "source_subject": subject, "missing": False}
         )
 
     # 收集目录：整目录 scandir 一遍（百级条目，比查库还快），顺便找出"库里记着、

@@ -332,12 +332,15 @@ class TTSNetworkProbeWorker(QThread):
         self.azure_region = azure_region
 
     def run(self):
-        ok, detail = probe_tts_network(
-            self.voice,
-            azure_key=self.azure_key,
-            azure_region=self.azure_region,
-            timeout=5.0,
-        )
+        try:
+            ok, detail = probe_tts_network(
+                self.voice,
+                azure_key=self.azure_key,
+                azure_region=self.azure_region,
+                timeout=5.0,
+            )
+        except Exception as exc:
+            ok, detail = False, f"检测异常（{exc}）"
         self.probed.emit(ok, detail)
 
 

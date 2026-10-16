@@ -633,7 +633,7 @@ class VocabView(QWidget):
         self.btn_detail_speak.setIcon(icon("volume", TEXT_COLORS["muted"], 14))
         self.btn_detail_speak.setCursor(Qt.PointingHandCursor)
         self.btn_detail_speak.setFocusPolicy(Qt.NoFocus)
-        self.btn_detail_speak.setToolTip("朗读韩语发音 (R)")
+        self.btn_detail_speak.setToolTip("朗读韩语发音 (R / .)")
         self.btn_detail_speak.setEnabled(False)
         self.btn_detail_speak.clicked.connect(self.speak_current_word)
         head.addWidget(self.btn_detail_speak)
@@ -775,7 +775,7 @@ class VocabView(QWidget):
         self.btn_pass_speak.setIcon(icon("volume", TEXT_COLORS["secondary"], 15))
         self.btn_pass_speak.setCursor(Qt.PointingHandCursor)
         self.btn_pass_speak.setFocusPolicy(Qt.NoFocus)
-        self.btn_pass_speak.setToolTip("朗读当前单词发音 (R)")
+        self.btn_pass_speak.setToolTip("朗读当前单词发音 (R / .)")
         self.btn_pass_speak.clicked.connect(self.speak_current_word)
         actions.addWidget(self.btn_pass_speak)
 
@@ -801,7 +801,7 @@ class VocabView(QWidget):
         box.addLayout(actions)
 
         # 底部淡灰快捷键弱指引
-        self.lbl_pass_hint = QLabel("1 认识 · 2 模糊 · 3 不认识 · Space 揭示释义 · R 发音 · Ctrl+Z 回退")
+        self.lbl_pass_hint = QLabel("1 认识 · 2 模糊 · 3 不认识 · Space / 0 揭示释义 · R / . 发音 · Ctrl+Z 回退")
         self.lbl_pass_hint.setObjectName("vocabCardHint")
         self.lbl_pass_hint.setAlignment(Qt.AlignCenter)
         box.addWidget(self.lbl_pass_hint)
@@ -906,7 +906,7 @@ class VocabView(QWidget):
         self.btn_drill_speak.setIcon(icon("volume", TEXT_COLORS["secondary"], 15))
         self.btn_drill_speak.setCursor(Qt.PointingHandCursor)
         self.btn_drill_speak.setFocusPolicy(Qt.NoFocus)
-        self.btn_drill_speak.setToolTip("朗读当前单词发音 (R)")
+        self.btn_drill_speak.setToolTip("朗读当前单词发音 (R / .)")
         self.btn_drill_speak.clicked.connect(self.speak_current_word)
         actions.addWidget(self.btn_drill_speak)
 
@@ -930,7 +930,7 @@ class VocabView(QWidget):
         box.addLayout(actions)
 
         # 底部淡灰快捷键弱指引
-        self.lbl_drill_hint = QLabel("1 认识了 · 2 还是不会 · R 发音 · Ctrl+Z 回退上一个")
+        self.lbl_drill_hint = QLabel("1 认识了 · 2 还是不会 · R / . 发音 · Ctrl+Z 回退上一个")
         self.lbl_drill_hint.setObjectName("vocabCardHint")
         self.lbl_drill_hint.setAlignment(Qt.AlignCenter)
         box.addWidget(self.lbl_drill_hint)
@@ -968,17 +968,25 @@ class VocabView(QWidget):
             shortcut.activated.connect(lambda s=state: self._judge(s))
             self._digit_shortcuts.append(shortcut)
 
-        self._space_shortcut = QShortcut(QKeySequence(Qt.Key_Space), self)
-        self._space_shortcut.setContext(Qt.WindowShortcut)
-        self._space_shortcut.activated.connect(self._toggle_reveal)
+        self._reveal_shortcuts = []
+        for key in (QKeySequence(Qt.Key_Space), QKeySequence(Qt.Key_0), QKeySequence(Qt.Key_Insert)):
+            shortcut = QShortcut(key, self)
+            shortcut.setContext(Qt.WindowShortcut)
+            shortcut.activated.connect(self._toggle_reveal)
+            self._reveal_shortcuts.append(shortcut)
+        self._space_shortcut = self._reveal_shortcuts[0]
 
         self._undo_shortcut = QShortcut(QKeySequence.Undo, self)
         self._undo_shortcut.setContext(Qt.WindowShortcut)
         self._undo_shortcut.activated.connect(self._handle_undo)
 
-        self._speak_shortcut = QShortcut(QKeySequence("R"), self)
-        self._speak_shortcut.setContext(Qt.WindowShortcut)
-        self._speak_shortcut.activated.connect(self._handle_speak_shortcut)
+        self._speak_shortcuts = []
+        for key in (QKeySequence("R"), QKeySequence(".")):
+            shortcut = QShortcut(key, self)
+            shortcut.setContext(Qt.WindowShortcut)
+            shortcut.activated.connect(self._handle_speak_shortcut)
+            self._speak_shortcuts.append(shortcut)
+        self._speak_shortcut = self._speak_shortcuts[0]
 
         # 2.6 的全局键里，`Ctrl+F` / `Ctrl+S` 落在有搜索框与笔记编辑区的模块上
         self._find_shortcut = QShortcut(QKeySequence.Find, self)
@@ -1001,10 +1009,12 @@ class VocabView(QWidget):
         active = visible and self._mode != self.MODE_BROWSE
         for shortcut in self._digit_shortcuts:
             shortcut.setEnabled(active)
-        self._space_shortcut.setEnabled(active and self._mode == self.MODE_PASS)
+        for shortcut in getattr(self, "_reveal_shortcuts", [self._space_shortcut]):
+            shortcut.setEnabled(active and self._mode == self.MODE_PASS)
         self._undo_shortcut.setEnabled(active)
-        if hasattr(self, "_speak_shortcut"):
-            self._speak_shortcut.setEnabled(visible)
+        for shortcut in getattr(self, "_speak_shortcuts", [getattr(self, "_speak_shortcut", None)]):
+            if shortcut:
+                shortcut.setEnabled(visible)
 
     def _keyboard_ok(self):
         """键盘只在过词/专攻生效，且不得抢走文本输入框的输入。"""
@@ -1014,7 +1024,7 @@ class VocabView(QWidget):
         return not isinstance(focus, (QLineEdit, QTextEdit))
 
     def _handle_speak_shortcut(self):
-        """快捷键 `R`：三个模式均可朗读当前词，但输入框聚焦时不拦截。"""
+        """快捷键 `R` / `.`：三个模式均可朗读当前词，但输入框聚焦时不拦截。"""
         if not self.isVisible():
             return
         focus = QApplication.focusWidget()
@@ -2058,7 +2068,7 @@ class VocabView(QWidget):
         else:
             self.lbl_pass_cn.setTextInteractionFlags(Qt.NoTextInteraction)
             restyle(self.lbl_pass_cn, "faint")
-            self.lbl_pass_cn.setText("释义已遮住 · 点击或按 Space 揭示")
+            self.lbl_pass_cn.setText("释义已遮住 · 点击或按 Space / 0 揭示")
 
     @staticmethod
     def _play_entrance(entrance, direction=1):
@@ -2361,10 +2371,14 @@ class VocabView(QWidget):
         self.speaker.stop()
         for shortcut in getattr(self, "_digit_shortcuts", []):
             shortcut.setEnabled(False)
+        for shortcut in getattr(self, "_reveal_shortcuts", []):
+            shortcut.setEnabled(False)
         if hasattr(self, "_space_shortcut"):
             self._space_shortcut.setEnabled(False)
         if hasattr(self, "_undo_shortcut"):
             self._undo_shortcut.setEnabled(False)
+        for shortcut in getattr(self, "_speak_shortcuts", []):
+            shortcut.setEnabled(False)
         if hasattr(self, "_speak_shortcut"):
             self._speak_shortcut.setEnabled(False)
         super().hideEvent(event)

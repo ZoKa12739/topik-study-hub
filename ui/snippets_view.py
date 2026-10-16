@@ -46,6 +46,7 @@ from PySide6.QtWidgets import (
     QListWidget,
     QListWidgetItem,
     QMenu,
+    QMessageBox,
     QPushButton,
     QScrollArea,
     QSplitter,
@@ -56,6 +57,7 @@ from PySide6.QtWidgets import (
 )
 
 from core.config import MATERIAL_SUBJECTS, SNIPPETS_DIR, normalize_path
+from core.library import delete_file
 from core.snippets import (
     COLLECTED_SOURCE,
     IMAGE_EXTS,
@@ -256,6 +258,13 @@ class SnippetsView(QWidget):
         self.search_input.textChanged.connect(self.apply_filter)
         bar.addWidget(self.search_input, 1)
 
+        self.btn_clear_missing = QPushButton("清除失效")
+        self.btn_clear_missing.setObjectName("iconButton")
+        self.btn_clear_missing.setIcon(icon("trash"))
+        self.btn_clear_missing.setToolTip("清除所有在磁盘上已检测不到的失效碎片记录")
+        self.btn_clear_missing.clicked.connect(self.clear_missing_snippets)
+        bar.addWidget(self.btn_clear_missing)
+
         # 复用 P1 的模式切换样式（可选中按钮），不新增 design token
         self.btn_view_mode = QPushButton(icon("image"), "网格")
         self.btn_view_mode.setObjectName("modeSwitch")
@@ -405,6 +414,10 @@ class SnippetsView(QWidget):
         self.btn_open = QPushButton(icon("image"), "打开原图")
         self.btn_open.clicked.connect(self._open_externally)
         actions.addWidget(self.btn_open)
+        self.btn_delete = QPushButton(icon("trash"), "删除")
+        self.btn_delete.setToolTip("从知识碎片中删除（收集的图片可移至回收站）")
+        self.btn_delete.clicked.connect(self._delete_selected_snippet)
+        actions.addWidget(self.btn_delete)
         actions.addStretch()
         box.addSpacing(4)
         box.addLayout(actions)
@@ -435,6 +448,9 @@ class SnippetsView(QWidget):
         """
         self._flush_note()
         self._flush_title()
+
+        # 自动清除磁盘上已检测不到（失效）的碎片记录及关联标签
+        self.database.remove_missing_snippets()
 
         existing = {row["path"]: row for row in self.database.list_snippets()}
         records = collect_records(self.database.library_snapshot(), existing)
@@ -707,7 +723,7 @@ class SnippetsView(QWidget):
 
         self._selected = row["path"] if row else None
         enabled = row is not None
-        for button in (self.btn_open, self.btn_reveal, self.btn_add_tag):
+        for button in (self.btn_open, self.btn_reveal, self.btn_add_tag, self.btn_delete):
             button.setEnabled(enabled)
         # 收集进来的碎片不在资料库里，没有"来源"可以定位
         self.btn_locate.setEnabled(
@@ -1221,6 +1237,12 @@ class SnippetsView(QWidget):
         if row is not None and row["source_subject"] != COLLECTED_SOURCE:
             action = menu.addAction(icon("folder"), "在资料库中定位")
             action.triggered.connect(lambda: self.reveal_in_vault.emit(path))
+        menu.addSeparator()
+        exists = os.path.exists(path)
+        action = menu.addAction(
+            icon("trash"), "删除碎片" if exists else "清除失效记录"
+        )
+        action.triggered.connect(lambda: self.delete_snippet(path))
         menu.exec(self.list_widget.viewport().mapToGlobal(position))
 
     def _prompt_rename_snippet(self, path):
@@ -1235,11 +1257,106 @@ class SnippetsView(QWidget):
         if ok and new_name.strip():
             self._rename_snippet_to(path, new_name.strip())
 
-    def _open_externally(self, path):
-        if not path or not os.path.exists(path):
-            show_toast(self.window(), "这个文件已经不在原位置了", "warning")
+    def _delete_selected_snippet(self):
+        if self._selected:
+            self.delete_snippet(self._selected)
+
+    def delete_snippet(self, path):
+        """删除一张碎片。收集进来的图片进回收站；资料库里的图片只清除碎片记录。"""
+        if not path:
             return
-        QDesktopServices.openUrl(QUrl.fromLocalFile(path))
+        row = self._row_for(path)
+        name = self._display_title(row) if row else os.path.basename(path)
+        exists = os.path.exists(path)
+        is_collected = row is not None and row.get("source_subject") == COLLECTED_SOURCE
+
+        if not exists:
+            question = (
+                f"《{name}》的图片文件已不在原位置。\n\n"
+                "要把这条失效记录从碎片库中清除吗？\n"
+                "（磁盘上不会有任何改动）"
+            )
+        elif is_collected:
+            question = (
+                f"确定要删除碎片《{name}》吗？\n\n"
+                "图片文件将被移至系统回收站（可还原），碎片记录与标签将被删除。"
+            )
+        else:
+            question = (
+                f"要把《{name}》从知识碎片中移除吗？\n\n"
+                "这只会删除碎片记录与标签；原课件资料图片仍会完整保留在资料库中。"
+            )
+
+        answer = QMessageBox.question(
+            self,
+            "删除碎片" if exists else "清除失效记录",
+            question,
+            QMessageBox.Yes | QMessageBox.No,
+            QMessageBox.No,
+        )
+        if answer != QMessageBox.Yes:
+            return
+
+        if exists and is_collected:
+            ok, message = delete_file(path)
+            if not ok:
+                self.banner.show_message("danger", f"删除失败：{message}")
+                return
+
+        self.database.remove_snippet_row(path)
+        if self._selected == path:
+            self._selected = None
+        self.refresh()
+        show_toast(
+            self.window(),
+            "已移至回收站并删除碎片" if (exists and is_collected) else ("已从碎片中移除" if exists else "已清除失效记录"),
+        )
+
+    def clear_missing_snippets(self):
+        """扫描并清除所有在磁盘上检测不到（或已标记为 missing）的失效碎片记录。"""
+        all_snippets = self.database.connection.execute(
+            "SELECT path, title, missing FROM snippets"
+        ).fetchall()
+        missing_paths = [
+            row["path"]
+            for row in all_snippets
+            if row["missing"] or not os.path.isfile(row["path"])
+        ]
+        count = len(missing_paths)
+        if not count:
+            show_toast(self.window(), "没有失效的知识碎片")
+            return
+
+        answer = QMessageBox.question(
+            self,
+            "清除失效碎片",
+            f"检测到 {count} 条图片文件已不存在的失效碎片记录。\n\n"
+            "要把这些失效记录从碎片库中清除吗？\n"
+            "（磁盘上不会有任何改动）",
+            QMessageBox.Yes | QMessageBox.No,
+            QMessageBox.No,
+        )
+        if answer != QMessageBox.Yes:
+            return
+
+        removed = self.database.remove_snippet_paths(missing_paths)
+        if self._selected in missing_paths:
+            self._selected = None
+        self.refresh()
+        show_toast(self.window(), f"已清除 {removed} 条失效碎片")
+
+    def _open_externally(self, path=None):
+        target = path if isinstance(path, str) and path else self._selected
+        if not target:
+            return
+        if not os.path.exists(target):
+            show_toast(self.window(), "这个图片已不在原位置，已自动从碎片库中清除", "warning")
+            self.database.remove_snippet_row(target)
+            if self._selected == target:
+                self._selected = None
+            self.refresh()
+            return
+        QDesktopServices.openUrl(QUrl.fromLocalFile(target))
 
     def _reveal(self):
         if self._selected:

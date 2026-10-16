@@ -2408,6 +2408,34 @@ class StudyDatabase:
         )
         self.connection.commit()
 
+    def remove_snippet_row(self, path):
+        """删除一条碎片记录及其关联标签。"""
+        norm_p = normalize_path(path)
+        with self.connection:
+            self.connection.execute("DELETE FROM snippet_tags WHERE path = ?", (norm_p,))
+            self.connection.execute("DELETE FROM snippets WHERE path = ?", (norm_p,))
+
+    def remove_snippet_paths(self, paths):
+        """批量删除碎片记录及关联标签。返回实际删除的条数。"""
+        cleaned = [normalize_path(p) for p in paths if p]
+        if not cleaned:
+            return 0
+        with self.connection:
+            for p in cleaned:
+                self.connection.execute("DELETE FROM snippet_tags WHERE path = ?", (p,))
+                self.connection.execute("DELETE FROM snippets WHERE path = ?", (p,))
+        return len(cleaned)
+
+    def remove_missing_snippets(self):
+        """检查并清除所有在磁盘上检测不到（或已标记为 missing）的失效碎片记录。"""
+        all_snippets = self.connection.execute("SELECT path, missing FROM snippets").fetchall()
+        missing_paths = [
+            row["path"]
+            for row in all_snippets
+            if row["missing"] or not os.path.isfile(row["path"])
+        ]
+        return self.remove_snippet_paths(missing_paths)
+
     # ==================================================================
     # 音频库与播放列表（P2，第 5 期）
     # ==================================================================

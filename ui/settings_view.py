@@ -452,8 +452,13 @@ class SettingsView(QWidget):
         worker.probed.connect(
             lambda ok, detail, m=manual: self._on_tts_net_probed(ok, detail, m)
         )
+        worker.finished.connect(self._on_tts_probe_finished)
         worker.finished.connect(worker.deleteLater)
         worker.start()
+
+    def _on_tts_probe_finished(self):
+        self._tts_probe_worker = None
+        self.btn_check_tts_net.setEnabled(True)
 
     def _on_tts_net_probed(self, ok: bool, detail: str, manual: bool = False):
         self._tts_probe_worker = None

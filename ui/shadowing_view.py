@@ -60,6 +60,9 @@ A-B 段还短"。
 信号描述的是上一个文件，等当前文件自己的那一个（`Loading → Loaded` 一定会来）。换源时顺手
 把挂起的段首定位清掉（`_swap_source`），迟到的信号就没什么可拽的了。
 
+`duration_ms` 的回填也搬到了这个分支（`_fill_track_duration`）：那一列只写第一次、写错没有
+第二条路能纠正，所以不能挂在会迟到的 `durationChanged` 上。
+
 ## 跟读时长的定义（4.3 数据依赖）
 
 * 只统计**处于播放状态**的时间；暂停、拖动进度条的时间不计
@@ -2107,10 +2110,14 @@ class ShadowingView(QWidget):
             self.flush_study_session()
 
     def update_duration(self, duration):
-        item = self._current_item()
-        if item is not None and duration > 0 and not item["duration_ms"]:
-            self.database.set_track_duration(item["track_id"], duration)
-            self._reload_track_row()
+        """`durationChanged`：**只喂走带控件**。
+
+        **不在这里回填 `duration_ms`**：这个信号可能是上一个文件迟到的——那时播放器
+        读到的时长会变回旧文件的值（AB 段被冤杀就是这个机理），而那一列只写第一次、
+        写错永久错，没有第二条路能纠正。回填挪到了已经能确认"是当前文件"的就绪分支
+        （`_fill_track_duration`）。滑块和标签错一下无所谓：当前文件的真时长随后就到，
+        会把它盖回去。
+        """
         self.slider.setRange(0, max(0, duration))
         self.lbl_total_time.setText(stamp(duration))
 
@@ -2168,24 +2175,44 @@ class ShadowingView(QWidget):
         self.slider.setValue(position)
         self.lbl_current_time.setText(stamp(position))
 
+    def _fill_track_duration(self):
+        """把这一段的总时长回填进库。**只在媒体就绪时调**（见 `_on_media_status`）。
+
+        `set_track_duration` 的 SQL 带着 `duration_ms IS NULL OR <= 0`，也就是这一列
+        一辈子只写第一次，写错没有第二条路能纠正——所以写入点必须放在"这条信号描述的
+        确实是当前文件"的地方。挂在 `durationChanged` 上时它不一定是：那个信号可能是
+        上一个文件迟到的，播放器读到的时长会变回旧文件的值。
+
+        代价是有后端把时长报到"就绪"之后才会漏掉这一格，列表里显示 `—`、已听次数算 0。
+        那是看得见的缺一格，比悄悄写错一列好。
+        """
+        item = self._current_item()
+        if item is None or item["duration_ms"]:
+            return
+        duration = self.player.duration()
+        if duration > 0:
+            self.database.set_track_duration(item["track_id"], duration)
+            self._reload_track_row()
+
     def _on_media_status(self, status):
         if status in (QMediaPlayer.MediaStatus.LoadedMedia, QMediaPlayer.MediaStatus.BufferedMedia):
-            # 媒体真的就绪了：把载入时挂起的定位落下来。
+            # 先确认这信号是**当前曲目**的。上一个文件的就绪信号还会到（setSource 之后才
+            # 送达），那时 duration() 报的还是旧文件的长度：拿它判 AB 段长度、或者回填
+            # duration_ms，都是在拿旧文件的数往新曲目身上写。见 _media_ready_fresh。
+            if not self._media_ready_fresh():
+                return
+            # 媒体真的就绪了，而且是当前这一个文件：把载入时挂起的定位落下来。
             # 播放位置恢复已停用，`_pending_position` 永远是 None，这个分支现在不会触发；
             # 留着是因为重新启用位置恢复时只需要在 load_track 里赋值，这里不用再改。
             if self._pending_position is not None:
                 target, self._pending_position = self._pending_position, None
                 self._seek(target)
-            elif self._pending_ab_start:
-                # 新的一段带着自己的 AB 段。**先确认这信号是当前曲目的**——上一个文件
-                # 迟到的就绪信号也会走到这儿，那时 duration() 还是旧文件的长度，
-                # 拿它判"段超出音频长度"会把一段好端端的 A-B 清掉（见 _media_ready_fresh）。
-                if self._media_ready_fresh():
-                    self._pending_ab_start = False
-                    self._drop_stale_ab()
-                    self._sync_playback_to_ab()
-                # 判断不了就等下一个：当前文件的 Loading → Loaded 一定会来，
-                # 这一轮什么也不做，不会有任何损失。
+            self._fill_track_duration()
+            if self._pending_ab_start:
+                # 新的一段带着自己的 AB 段：先作废整体落在文件尾之外的，再把播放头挪到段首
+                self._pending_ab_start = False
+                self._drop_stale_ab()
+                self._sync_playback_to_ab()
             return
         if status != QMediaPlayer.MediaStatus.EndOfMedia:
             return

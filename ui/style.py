@@ -10,6 +10,7 @@ STATE_OBJECT_NAMES = {
     "warning": "stateWarning",
     "danger": "stateDanger",
     "info": "stateInfo",
+    "muted": "muted",
 }
 
 
@@ -25,9 +26,9 @@ def restyle(widget, object_name):
 def set_state(widget, state):
     """把标签切到某个语义状态色。
 
-    state: 'success' / 'warning' / 'danger' / 'info'，或 None 表示退回次要文字色。
+    state: 'success' / 'warning' / 'danger' / 'info'，或 None / 'muted' 表示退回次要文字色。
 
     注意（DESIGN.md §3.1 纪律 3）：**颜色不得单独承载语义**，
     调用方必须保证该标签的文字本身已说明发生了什么。
     """
-    restyle(widget, STATE_OBJECT_NAMES[state] if state else "muted")
+    restyle(widget, STATE_OBJECT_NAMES.get(state, "muted"))

@@ -209,6 +209,13 @@ QPushButton#navSettings:checked {{
     font-weight: 500;
 }}
 
+/* 侧边栏折叠为纯图标状态时的居中对齐与无文字紧凑间距 */
+QPushButton#navItem[collapsed="true"],
+QPushButton#navSettings[collapsed="true"] {{
+    text-align: center;
+    padding: 6px 0px;
+}}
+
 /* ---------- 窗口右上角控制按钮（无边框 CSD） ---------- */
 
 QPushButton#winCtrlBtn, QPushButton#winCloseBtn {{
@@ -237,6 +244,27 @@ QPushButton#winCloseBtn:hover {{
 
 QPushButton#winCloseBtn:pressed {{
     background: #962922;
+}}
+
+/* ---------- 顶部栏侧边栏折叠切换按钮 ---------- */
+QPushButton#sidebarToggleBtn {{
+    background: transparent;
+    border: none;
+    border-radius: 6px;
+    padding: 0px;
+    min-width: 28px;
+    max-width: 28px;
+    min-height: 28px;
+    max-height: 28px;
+    outline: 0;
+}}
+
+QPushButton#sidebarToggleBtn:hover {{
+    background: #E6ECE7;
+}}
+
+QPushButton#sidebarToggleBtn:pressed {{
+    background: #DCE5DE;
 }}
 
 /* ---------- 页头 ---------- */
@@ -1437,6 +1465,94 @@ QWidget#flatDetailPanel, QFrame#flatDetailPanel {{
     background: transparent;
     border: none;
     border-radius: 0;
+}}
+
+/* 单词仓浏览模式重构：右侧按需抽屉、状态胶囊、视图切换、自测模式 */
+QWidget#vocabNoteDrawer, QFrame#vocabNoteDrawer {{
+    background: #FAFBF9;
+    border-left: 1px solid #DDE5DE;
+}}
+
+QPushButton#filterPill {{
+    background: transparent;
+    border: 1px solid transparent;
+    border-radius: 12px;
+    padding: 3px 10px;
+    color: #646E68;
+    font-size: 13px;
+    font-weight: 500;
+}}
+QPushButton#filterPill:hover {{
+    background: #F2F5F1;
+    color: #2A322D;
+}}
+QPushButton#filterPill:checked {{
+    background: #E3EBE5;
+    border-color: #C6D2C9;
+    color: #1F6B57;
+    font-weight: 600;
+}}
+
+QPushButton#viewSwitchBtn {{
+    background: transparent;
+    border: 1px solid #DDE5DE;
+    border-radius: 6px;
+    padding: 3px 8px;
+    color: #646E68;
+    font-size: 13px;
+}}
+QPushButton#viewSwitchBtn:hover {{
+    background: #F2F5F1;
+    color: #2A322D;
+}}
+QPushButton#viewSwitchBtn:checked {{
+    background: #E3EBE5;
+    border-color: #C6D2C9;
+    color: #1F6B57;
+    font-weight: 600;
+}}
+
+QPushButton#testModeToggle {{
+    background: transparent;
+    border: 1px solid #DDE5DE;
+    border-radius: 6px;
+    padding: 3px 10px;
+    color: #646E68;
+    font-size: 13px;
+}}
+QPushButton#testModeToggle:hover {{
+    background: #F2F5F1;
+    color: #2A322D;
+}}
+QPushButton#testModeToggle:checked {{
+    background: #FEF3E8;
+    border-color: #F0C49E;
+    color: #8A6410;
+    font-weight: 600;
+}}
+
+QPushButton#drawerCloseBtn {{
+    background: transparent;
+    border: none;
+    border-radius: 4px;
+    padding: 4px;
+}}
+QPushButton#drawerCloseBtn:hover {{
+    background: #F2F5F1;
+}}
+
+QTableView#vocabCardGrid {{
+    background: transparent;
+    border: none;
+    outline: 0;
+}}
+QTableView#vocabCardGrid::item {{
+    border: none;
+    padding: 0px;
+}}
+
+QTableWidget#vocabTable::item {{
+    padding: 7px 8px;
 }}
 
 QSplitter#vocabSplitter::handle:horizontal,

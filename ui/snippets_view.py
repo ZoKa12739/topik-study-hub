@@ -179,6 +179,11 @@ class SnippetsView(QWidget):
         self._note_timer.setInterval(self.NOTE_DEBOUNCE_MS)
         self._note_timer.timeout.connect(self._flush_note)
 
+        self._thumb_timer = QTimer(self)
+        self._thumb_timer.setSingleShot(True)
+        self._thumb_timer.setInterval(30)
+        self._thumb_timer.timeout.connect(self._request_visible_thumbs)
+
         self.thumb_worker = ThumbnailWorker(self)
         self.thumb_worker.thumb_ready.connect(self._on_thumb_ready)
         self.thumb_worker.start()
@@ -278,6 +283,8 @@ class SnippetsView(QWidget):
     def _build_list_area(self):
         self.list_widget = QListWidget()
         self.list_widget.setObjectName("snippetList")
+        self.list_widget.setVerticalScrollMode(QAbstractItemView.ScrollPerPixel)
+        self.list_widget.setHorizontalScrollBarPolicy(Qt.ScrollBarAlwaysOff)
         self._list_delegate = PillListDelegate(self.list_widget)
         self.list_widget.setItemDelegate(self._list_delegate)
         self.list_widget.setSelectionMode(QAbstractItemView.SingleSelection)
@@ -286,7 +293,7 @@ class SnippetsView(QWidget):
         self.list_widget.setContextMenuPolicy(Qt.CustomContextMenu)
         self.list_widget.customContextMenuRequested.connect(self._show_context_menu)
         self.list_widget.verticalScrollBar().valueChanged.connect(
-            lambda _value: self._request_visible_thumbs()
+            lambda _value: self._schedule_visible_thumbs()
         )
         # 拖动左右分隔条会改变列表宽度（每行露出几张图就变了），但不会改变本页尺寸
         self.list_widget.viewport().installEventFilter(self)
@@ -426,6 +433,7 @@ class SnippetsView(QWidget):
         detail_scroll.setObjectName("detailScroll")
         detail_scroll.setWidgetResizable(True)
         detail_scroll.setFrameShape(QFrame.NoFrame)
+        detail_scroll.verticalScrollBar().setSingleStep(40)
         detail_scroll.setWidget(panel)
         split.addWidget(detail_scroll)
 
@@ -592,8 +600,10 @@ class SnippetsView(QWidget):
                     break
             else:
                 self._select(None)
-        else:
-            self._select(None)
+        # 网格模式单行高 182px（170 卡片 + 12 间距），设置 singleStep=60 使单次滚轮（3 步）推进 180px（恰好一行图）；
+        # 列表模式单行高 68px（64 项 + 4 间距），设置 singleStep=45 使单次滚轮推进约 2 行（135px），避免原生 29px 步长导致滚轮过慢
+        step = 60 if self.list_widget.viewMode() == QListWidget.IconMode else 45
+        self.list_widget.verticalScrollBar().setSingleStep(step)
 
         self._request_visible_thumbs()
 
@@ -657,6 +667,10 @@ class SnippetsView(QWidget):
     # ==================================================================
     # 缩略图（只解码看得见的那几行）
     # ==================================================================
+
+    def _schedule_visible_thumbs(self):
+        if hasattr(self, "_thumb_timer") and not self._thumb_timer.isActive():
+            self._thumb_timer.start(30)
 
     def _request_visible_thumbs(self):
         if self.list_stack.currentIndex() != 0:
@@ -1082,6 +1096,8 @@ class SnippetsView(QWidget):
         "Destroyed while thread is still running"，运气不好直接崩在退出路径上。
         """
         self.flush_pending()
+        if hasattr(self, "_thumb_timer"):
+            self._thumb_timer.stop()
         self.thumb_worker.stop()
 
     # ==================================================================

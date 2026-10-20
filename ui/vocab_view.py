@@ -38,10 +38,30 @@
 import os
 from pathlib import Path
 
-from PySide6.QtCore import QEvent, QPoint, QSize, QTimer, Qt, Signal
-from PySide6.QtGui import QColor, QFont, QKeySequence, QShortcut
+from PySide6.QtCore import (
+    QAbstractTableModel,
+    QEvent,
+    QModelIndex,
+    QPoint,
+    QRect,
+    QSize,
+    QTimer,
+    Qt,
+    Signal,
+)
+from PySide6.QtGui import (
+    QBrush,
+    QColor,
+    QFont,
+    QFontMetrics,
+    QKeySequence,
+    QPainter,
+    QPen,
+    QShortcut,
+)
 from PySide6.QtWidgets import (
     QApplication,
+    QButtonGroup,
     QComboBox,
     QFileDialog,
     QFrame,
@@ -56,6 +76,9 @@ from PySide6.QtWidgets import (
     QPushButton,
     QSplitter,
     QStackedWidget,
+    QStyle,
+    QStyledItemDelegate,
+    QTableView,
     QTableWidget,
     QTableWidgetItem,
     QTextEdit,
@@ -82,6 +105,10 @@ from ui.style import restyle
 from ui.theme import (
     ACCENT,
     ACCENT_WARM,
+    BG_HOVER,
+    BG_SURFACE,
+    BORDER_COLOR,
+    BORDER_STRONG,
     ROW_BASE_BG,
     ROW_DRILL_BG,
     STATE_COLORS,
@@ -333,6 +360,326 @@ class _WordListPopup(QFrame):
             self._combo.delete_requested.emit(list_id)
 
 
+class WordCardGridModel(QAbstractTableModel):
+    """卡片网格的数据模型（支持双列/多列横向流排布与高性能虚拟化渲染）。"""
+
+    def __init__(self, parent=None):
+        super().__init__(parent)
+        self._words = []
+        self._columns = 2
+
+    def set_words(self, words, columns=2):
+        self.beginResetModel()
+        self._words = list(words)
+        self._columns = max(1, columns)
+        self.endResetModel()
+
+    def rowCount(self, parent=QModelIndex()):
+        if not self._words:
+            return 0
+        return (len(self._words) + self._columns - 1) // self._columns
+
+    def columnCount(self, parent=QModelIndex()):
+        return self._columns
+
+    def word_at(self, row, col):
+        idx = row * self._columns + col
+        if 0 <= idx < len(self._words):
+            return self._words[idx]
+        return None
+
+    def index_for_word(self, korean):
+        for idx, word in enumerate(self._words):
+            if word.get("korean") == korean:
+                r = idx // self._columns
+                c = idx % self._columns
+                return self.index(r, c)
+        return QModelIndex()
+
+    def flags(self, index):
+        if not index.isValid():
+            return Qt.NoItemFlags
+        if not self.word_at(index.row(), index.column()):
+            return Qt.NoItemFlags
+        return Qt.ItemIsSelectable | Qt.ItemIsEnabled
+
+    def data(self, index, role=Qt.DisplayRole):
+        if not index.isValid():
+            return None
+        word = self.word_at(index.row(), index.column())
+        if not word:
+            return None
+        if role == Qt.UserRole:
+            return word
+        return None
+
+
+class WordCardDelegate(QStyledItemDelegate):
+    """紧凑横向流卡片委托绘制器：韩语大字 + 中文释义 + 状态角标 + 悬停快捷入口。"""
+
+    action_clicked = Signal(str, dict)
+    card_double_clicked = Signal(dict)
+
+    def __init__(self, parent=None):
+        super().__init__(parent)
+        self.test_mode = False
+        self._hover_index = QModelIndex()
+        self._hover_action = None
+
+    def set_test_mode(self, enabled: bool):
+        self.test_mode = enabled
+
+    def set_hover(self, index: QModelIndex, action: str = None):
+        self._hover_index = index
+        self._hover_action = action
+
+    def sizeHint(self, option, index):
+        return QSize(320, 70)
+
+    def paint(self, painter: QPainter, option, index: QModelIndex):
+        word = index.data(Qt.UserRole)
+        if not word:
+            return
+
+        painter.save()
+        painter.setRenderHint(QPainter.Antialiasing, True)
+        painter.setRenderHint(QPainter.TextAntialiasing, True)
+
+        rect = option.rect.adjusted(5, 3, -5, -3)
+        is_selected = bool(option.state & QStyle.State_Selected)
+        is_hovered = (index == self._hover_index)
+        state = word.get("state", "") or ""
+        is_drill = state in _TO_DRILL
+
+        # 1. 卡片背景底色
+        bg_color = QColor(ROW_DRILL_BG if is_drill else BG_SURFACE)
+        if is_hovered and not is_drill:
+            bg_color = QColor(BG_HOVER)
+        painter.setBrush(QBrush(bg_color))
+
+        # 2. 边框
+        if is_selected:
+            painter.setPen(QPen(QColor(ACCENT), 1.5))
+        elif is_hovered:
+            painter.setPen(QPen(QColor(BORDER_STRONG), 1))
+        else:
+            painter.setPen(QPen(QColor(BORDER_COLOR), 1))
+
+        painter.drawRoundedRect(rect, 8, 8)
+
+        # 3. 尺寸与定位
+        rx = rect.right() - 10
+        top_y = rect.top() + 8
+
+        # 状态色标药丸（右上角）
+        state_text = STATE_LABELS.get(state, "未过")
+        st_color = QColor(state_color(state))
+        pill_rect = QRect(rx - 44, top_y, 44, 20)
+
+        pill_bg_map = {
+            "known": QColor("#E6F3EB"),
+            "fuzzy": QColor("#FEF7E6"),
+            "unknown": QColor("#FDEEEB"),
+            "": QColor("#F0F2F0"),
+        }
+        painter.setBrush(QBrush(pill_bg_map.get(state, QColor("#F0F2F0"))))
+        painter.setPen(Qt.NoPen)
+        painter.drawRoundedRect(pill_rect, 10, 10)
+
+        pill_font = QFont(painter.font())
+        pill_font.setPointSize(9)
+        pill_font.setBold(True)
+        painter.setFont(pill_font)
+        painter.setPen(QPen(st_color))
+        painter.drawText(pill_rect, Qt.AlignCenter, state_text)
+
+        # 药丸左侧：悬停时浮现动作图标，平时展示星标与笔记指示
+        curr_x = rx - 48
+        if is_hovered:
+            # 发音
+            tts_rect = QRect(curr_x - 22, top_y, 20, 20)
+            is_tts_h = (self._hover_action == "tts")
+            icon("volume", ACCENT if is_tts_h else TEXT_COLORS["muted"], 14).paint(painter, tts_rect)
+            curr_x -= 24
+
+            # 星标
+            star_rect = QRect(curr_x - 22, top_y, 20, 20)
+            is_star_h = (self._hover_action == "star")
+            is_starred = bool(word.get("is_starred"))
+            star_color = ACCENT_WARM if (is_starred or is_star_h) else TEXT_COLORS["muted"]
+            icon("star-filled" if is_starred else "star", star_color, 14).paint(painter, star_rect)
+            curr_x -= 24
+
+            # 笔记
+            note_rect = QRect(curr_x - 22, top_y, 20, 20)
+            is_note_h = (self._hover_action == "note")
+            icon("edit", ACCENT if is_note_h else TEXT_COLORS["muted"], 14).paint(painter, note_rect)
+            curr_x -= 24
+        else:
+            if word.get("is_starred"):
+                star_rect = QRect(curr_x - 18, top_y + 2, 16, 16)
+                icon("star-filled", ACCENT_WARM, 13).paint(painter, star_rect)
+                curr_x -= 20
+            if word.get("note"):
+                note_rect = QRect(curr_x - 18, top_y + 2, 16, 16)
+                icon("edit", TEXT_COLORS["faint"], 13).paint(painter, note_rect)
+                curr_x -= 20
+
+        # 第一行内容：韩文大字 (16pt Pretendard, 约 21px) + 中文释义 (11pt)
+        kr_font = QFont("Pretendard", 16)
+        kr_font.setBold(True)
+        painter.setFont(kr_font)
+        painter.setPen(QPen(QColor(TEXT_COLORS["primary"])))
+
+        fm_kr = QFontMetrics(kr_font)
+        korean_str = word.get("korean", "")
+        kr_w = fm_kr.horizontalAdvance(korean_str)
+        kr_rect = QRect(rect.left() + 12, top_y - 2, kr_w, 26)
+        painter.drawText(kr_rect, Qt.AlignLeft | Qt.AlignVCenter, korean_str)
+
+        # 中文释义
+        cn_x = kr_rect.right() + 12
+        cn_w = max(0, curr_x - cn_x - 6)
+        if cn_w > 10:
+            cn_font = QFont(painter.font())
+            cn_font.setPointSize(11)
+            cn_font.setBold(False)
+            painter.setFont(cn_font)
+
+            if self.test_mode and not (is_hovered or is_selected):
+                painter.setPen(QPen(QColor(TEXT_COLORS["faint"])))
+                painter.drawText(QRect(cn_x, top_y - 2, cn_w, 26), Qt.AlignLeft | Qt.AlignVCenter, "••••••")
+            else:
+                meaning_str = word.get("meaning", "") or ""
+                fm_cn = QFontMetrics(cn_font)
+                elided_cn = fm_cn.elidedText(meaning_str, Qt.ElideRight, cn_w)
+                painter.setPen(QPen(QColor(TEXT_COLORS["secondary"])))
+                painter.drawText(QRect(cn_x, top_y - 2, cn_w, 26), Qt.AlignLeft | Qt.AlignVCenter, elided_cn)
+
+        # 第二行内容：编号标签 (#12) + 笔记摘要
+        bot_y = rect.top() + 36
+        bot_font = QFont(painter.font())
+        bot_font.setPointSize(10)
+        bot_font.setBold(False)
+        painter.setFont(bot_font)
+
+        seq_text = f"#{word.get('seq', '')}"
+        if word.get("list_name"):
+            seq_text = f"[{word['list_name']}] #{word.get('seq', '')}"
+        fm_bot = QFontMetrics(bot_font)
+        seq_w = fm_bot.horizontalAdvance(seq_text)
+
+        painter.setPen(QPen(QColor(TEXT_COLORS["faint"])))
+        painter.drawText(QRect(rect.left() + 12, bot_y, seq_w, 18), Qt.AlignLeft | Qt.AlignVCenter, seq_text)
+
+        # 笔记摘要展示
+        note_text = (word.get("note") or "").strip().replace("\n", " ")
+        if note_text:
+            note_x = rect.left() + 12 + seq_w + 10
+            note_w = max(0, rect.right() - 12 - note_x)
+            if note_w > 20:
+                elided_note = fm_bot.elidedText(f"📝 {note_text}", Qt.ElideRight, note_w)
+                painter.setPen(QPen(QColor(TEXT_COLORS["muted"])))
+                painter.drawText(QRect(note_x, bot_y, note_w, 18), Qt.AlignLeft | Qt.AlignVCenter, elided_note)
+
+        painter.restore()
+
+    def editorEvent(self, event, model, option, index):
+        word = index.data(Qt.UserRole)
+        if not word:
+            return False
+
+        rect = option.rect.adjusted(5, 3, -5, -3)
+        rx = rect.right() - 10
+        top_y = rect.top() + 8
+
+        pill_rect = QRect(rx - 44, top_y, 44, 20)
+        tts_rect = QRect(rx - 48 - 22, top_y, 20, 20)
+        star_rect = QRect(rx - 48 - 46, top_y, 20, 20)
+        note_rect = QRect(rx - 48 - 70, top_y, 20, 20)
+
+        pos = event.pos() if hasattr(event, "pos") else None
+
+        if event.type() == QEvent.MouseMove:
+            action = None
+            if pill_rect.contains(pos):
+                action = "state"
+            elif tts_rect.contains(pos):
+                action = "tts"
+            elif star_rect.contains(pos):
+                action = "star"
+            elif note_rect.contains(pos):
+                action = "note"
+
+            if self._hover_index != index or self._hover_action != action:
+                self._hover_index = index
+                self._hover_action = action
+                if option.widget:
+                    option.widget.viewport().update()
+            return False
+
+        if event.type() == QEvent.MouseButtonRelease and event.button() == Qt.LeftButton:
+            if pill_rect.contains(pos):
+                self.action_clicked.emit("state", word)
+                return True
+            if tts_rect.contains(pos):
+                self.action_clicked.emit("tts", word)
+                return True
+            if star_rect.contains(pos):
+                self.action_clicked.emit("star", word)
+                return True
+            if note_rect.contains(pos):
+                self.action_clicked.emit("note", word)
+                return True
+
+        if event.type() == QEvent.MouseButtonDblClick and event.button() == Qt.LeftButton:
+            self.card_double_clicked.emit(word)
+            return True
+
+        return super().editorEvent(event, model, option, index)
+
+
+class _VocabCardTableView(QTableView):
+    """卡片网格专用 QTableView，处理键盘快捷键与悬停脱离。"""
+
+    def leaveEvent(self, event):
+        delegate = self.itemDelegate()
+        if hasattr(delegate, "set_hover"):
+            delegate.set_hover(QModelIndex(), None)
+            self.viewport().update()
+        super().leaveEvent(event)
+
+    def keyPressEvent(self, event):
+        parent_view = self.parent()
+        while parent_view and not hasattr(parent_view, "open_note_drawer"):
+            parent_view = parent_view.parent()
+
+        if parent_view:
+            if event.matches(QKeySequence.Copy) or (event.modifiers() & Qt.ControlModifier and event.key() == Qt.Key_C):
+                parent_view.copy_current_word("korean")
+                event.accept()
+                return
+            if event.key() == Qt.Key_N:
+                parent_view.open_note_drawer()
+                event.accept()
+                return
+            if event.key() == Qt.Key_R:
+                parent_view.speak_current_word()
+                event.accept()
+                return
+            if event.key() == Qt.Key_Escape:
+                parent_view.close_note_drawer()
+                event.accept()
+                return
+            if event.key() in (Qt.Key_1, Qt.Key_2, Qt.Key_3):
+                mapping = {Qt.Key_1: "known", Qt.Key_2: "fuzzy", Qt.Key_3: "unknown"}
+                parent_view._on_quick_digit_key(mapping[event.key()])
+                event.accept()
+                return
+
+        super().keyPressEvent(event)
+
+
 class VocabView(QWidget):
     """P1 智能单词仓。"""
 
@@ -559,16 +906,86 @@ class VocabView(QWidget):
         box.setContentsMargins(0, 0, 0, 0)
         box.setSpacing(0)
 
-        # 词表元信息条：词表名 · N 个词 · 已过 X · 待专攻 M
+        # 词表元信息与全局控制枢纽：统计概览 · 状态胶囊筛选 · 自测开关 · 视图切换
         meta_bar = QFrame()
         meta_bar.setObjectName("paneSubBar")
         meta_row = QHBoxLayout(meta_bar)
-        meta_row.setContentsMargins(20, 6, 20, 6)
+        meta_row.setContentsMargins(16, 6, 16, 6)
+        meta_row.setSpacing(10)
+
         self.lbl_meta = QLabel("")
         self.lbl_meta.setObjectName("muted")
         meta_row.addWidget(self.lbl_meta)
+
+        # 垂直分隔线
+        div = QFrame()
+        div.setFrameShape(QFrame.VLine)
+        div.setFrameShadow(QFrame.Plain)
+        div.setObjectName("paneDivider")
+        meta_row.addWidget(div)
+
+        # 状态胶囊筛选组 [全部] [不认识] [模糊] [认识]
+        self._filter_btn_group = QButtonGroup(self)
+        self._filter_btn_group.setExclusive(True)
+        self._state_filter = "all"
+        filter_specs = [
+            ("all", "全部"),
+            ("unknown", "不认识"),
+            ("fuzzy", "模糊"),
+            ("known", "认识"),
+        ]
+        self._filter_pills = {}
+        for key, label in filter_specs:
+            btn = QPushButton(label)
+            btn.setObjectName("filterPill")
+            btn.setCheckable(True)
+            btn.setCursor(Qt.PointingHandCursor)
+            if key == "all":
+                btn.setChecked(True)
+            self._filter_btn_group.addButton(btn)
+            btn.clicked.connect(lambda _c, k=key: self._on_filter_pill_clicked(k))
+            meta_row.addWidget(btn)
+            self._filter_pills[key] = btn
+
         meta_row.addStretch()
 
+        # 背诵自测开关：隐藏释义（Hover/选中临时揭示）
+        self.btn_test_mode = QPushButton("隐藏释义")
+        self.btn_test_mode.setObjectName("testModeToggle")
+        self.btn_test_mode.setIcon(icon("eye-off", TEXT_COLORS["secondary"], 14))
+        self.btn_test_mode.setCheckable(True)
+        self.btn_test_mode.setCursor(Qt.PointingHandCursor)
+        self.btn_test_mode.setToolTip("开启背诵自测模式：默认隐藏中文释义，鼠标悬停或选中词条时临时清晰呈现")
+        self.btn_test_mode.clicked.connect(self._on_test_mode_toggled)
+        meta_row.addWidget(self.btn_test_mode)
+
+        # 视图切换按钮组：卡片网格 / 紧凑表格
+        self._view_mode = "grid"
+        self._view_btn_group = QButtonGroup(self)
+        self._view_btn_group.setExclusive(True)
+
+        self.btn_view_grid = QPushButton("网格")
+        self.btn_view_grid.setObjectName("viewSwitchBtn")
+        self.btn_view_grid.setIcon(icon("grid", TEXT_COLORS["secondary"], 14))
+        self.btn_view_grid.setCheckable(True)
+        self.btn_view_grid.setChecked(True)
+        self.btn_view_grid.setCursor(Qt.PointingHandCursor)
+        self.btn_view_grid.setToolTip("卡片网格视图：双列横向流排布，大字快速扫词")
+        self.btn_view_grid.clicked.connect(lambda: self._set_browse_view_mode("grid"))
+        self._view_btn_group.addButton(self.btn_view_grid)
+        meta_row.addWidget(self.btn_view_grid)
+
+        self.btn_view_table = QPushButton("表格")
+        self.btn_view_table.setObjectName("viewSwitchBtn")
+        self.btn_view_table.setIcon(icon("list", TEXT_COLORS["secondary"], 14))
+        self.btn_view_table.setCheckable(True)
+        self.btn_view_table.setCursor(Qt.PointingHandCursor)
+        self.btn_view_table.setToolTip("紧凑表格视图：带个人笔记摘要的高密度数据表格")
+        self.btn_view_table.clicked.connect(lambda: self._set_browse_view_mode("table"))
+        self._view_btn_group.addButton(self.btn_view_table)
+        meta_row.addWidget(self.btn_view_table)
+
+        # 批量预缓存发音按钮（全部就绪时自动隐藏）
         self.btn_batch_tts = QPushButton("缓存发音")
         self.btn_batch_tts.setObjectName("iconButton")
         self.btn_batch_tts.setIcon(icon("download"))
@@ -580,93 +997,133 @@ class VocabView(QWidget):
 
         box.addWidget(meta_bar)
 
-        splitter = QSplitter(Qt.Horizontal)
-        splitter.setObjectName("vocabSplitter")
-        splitter.setHandleWidth(1)
-        splitter.setChildrenCollapsible(False)
+        # 主分栏容器：左侧全宽主展示区，右侧按需呼出的笔记抽屉
+        self.splitter = QSplitter(Qt.Horizontal)
+        self.splitter.setObjectName("vocabSplitter")
+        self.splitter.setHandleWidth(1)
+        self.splitter.setChildrenCollapsible(True)
 
-        self.table = QTableWidget(0, 4)
+        self.left_stack = QStackedWidget()
+
+        # 0: 卡片网格视图
+        self.grid_model = WordCardGridModel(self)
+        self.grid_delegate = WordCardDelegate(self)
+        self.grid_delegate.action_clicked.connect(self._on_grid_action_clicked)
+        self.grid_delegate.card_double_clicked.connect(lambda word: self.open_note_drawer(word))
+
+        self.grid_view = _VocabCardTableView(self)
+        self.grid_view.setObjectName("vocabCardGrid")
+        self.grid_view.setModel(self.grid_model)
+        self.grid_view.setItemDelegate(self.grid_delegate)
+        self.grid_view.setShowGrid(False)
+        self.grid_view.verticalHeader().setVisible(False)
+        self.grid_view.verticalHeader().setDefaultSectionSize(70)
+        self.grid_view.horizontalHeader().setVisible(False)
+        self.grid_view.horizontalHeader().setSectionResizeMode(QHeaderView.Stretch)
+        self.grid_view.setSelectionMode(QTableView.SingleSelection)
+        self.grid_view.setSelectionBehavior(QTableView.SelectItems)
+        self.grid_view.setMouseTracking(True)
+        self.grid_view.setContextMenuPolicy(Qt.CustomContextMenu)
+        self.grid_view.customContextMenuRequested.connect(self._grid_context_menu)
+        self.grid_view.selectionModel().selectionChanged.connect(self._on_grid_selection_changed)
+
+        self.left_stack.addWidget(self.grid_view)  # 0
+
+        # 1: 紧凑表格视图
+        self.table = QTableWidget(0, 5)
+        self.table.setObjectName("vocabTable")
         self.table.setSelectionBehavior(QTableWidget.SelectRows)
         self.table.setSelectionMode(QTableWidget.SingleSelection)
         self.table.setEditTriggers(QTableWidget.NoEditTriggers)
         self.table.setShowGrid(False)
         self.table.verticalHeader().setVisible(False)
+        self.table.verticalHeader().setDefaultSectionSize(38)
         self.table.horizontalHeader().setHighlightSections(False)
-        # 样式由全局主题提供（QTableWidget / QHeaderView），见 ui/theme.py
-        self.table.itemSelectionChanged.connect(self.show_details)
-        # 表格不是文本控件，没有内置复制——而这一页最常见的动作就是"查到一个词、
-        # 把它拿走"。右键菜单与 Ctrl+C 都接在 `copy_current_word` 上。
+        self.table.itemSelectionChanged.connect(self._on_table_selection_changed)
+        self.table.itemDoubleClicked.connect(lambda _item: self.open_note_drawer())
         self.table.setContextMenuPolicy(Qt.CustomContextMenu)
         self.table.customContextMenuRequested.connect(self._table_context_menu)
 
+        self.left_stack.addWidget(self.table)      # 1
+
+        # 2: 空数据提示
         self.empty = EmptyState("", "")
         self.empty.action_clicked.connect(self._on_empty_action)
         self._empty_action = None
+        self.left_stack.addWidget(self.empty)      # 2
 
-        self.left_stack = QStackedWidget()
-        self.left_stack.addWidget(self.table)   # 0
-        self.left_stack.addWidget(self.empty)   # 1
-        splitter.addWidget(self.left_stack)
+        self.splitter.addWidget(self.left_stack)
 
-        splitter.addWidget(self._build_detail_card())
-        splitter.setSizes([620, 320])
+        # 右侧按需呼出的笔记抽屉（平时收起）
+        self.drawer = self._build_note_drawer()
+        self.drawer.setVisible(False)
+        self.splitter.addWidget(self.drawer)
+        self.splitter.setSizes([1000, 0])
 
-        box.addWidget(splitter, 1)
+        box.addWidget(self.splitter, 1)
         self._configure_columns(False)
         return page
 
-    def _build_detail_card(self):
-        card = QFrame()
-        card.setObjectName("flatDetailPanel")
-        box = QVBoxLayout(card)
-        box.setContentsMargins(16, 16, 16, 16)
-        box.setSpacing(8)
+    def _build_note_drawer(self):
+        drawer = QFrame()
+        drawer.setObjectName("vocabNoteDrawer")
+        drawer.setMinimumWidth(320)
+        drawer.setMaximumWidth(420)
+        box = QVBoxLayout(drawer)
+        box.setContentsMargins(18, 16, 18, 16)
+        box.setSpacing(10)
 
         head = QHBoxLayout()
-        heading = QLabel("单词卡片")
+        heading = QLabel("个人笔记")
         heading.setObjectName("sectionTitle")
         head.addWidget(heading)
         head.addStretch()
+
+        self.btn_drawer_close = QPushButton()
+        self.btn_drawer_close.setObjectName("drawerCloseBtn")
+        self.btn_drawer_close.setIcon(icon("x", TEXT_COLORS["muted"], 14))
+        self.btn_drawer_close.setCursor(Qt.PointingHandCursor)
+        self.btn_drawer_close.setToolTip("关闭笔记抽屉 (Esc)")
+        self.btn_drawer_close.clicked.connect(self.close_note_drawer)
+        head.addWidget(self.btn_drawer_close)
+        box.addLayout(head)
+
+        self.lbl_detail_seq = QLabel("")
+        self.lbl_detail_seq.setObjectName("quizSeq")
+        box.addWidget(self.lbl_detail_seq)
+
+        kr_row = QHBoxLayout()
+        self.lbl_detail_kr = QLabel("请选择单词")
+        self.lbl_detail_kr.setObjectName("wordDisplay")
+        self.lbl_detail_kr.setWordWrap(True)
+        kr_row.addWidget(make_copyable(self.lbl_detail_kr), 1)
 
         self.btn_detail_speak = QPushButton("发音")
         self.btn_detail_speak.setObjectName("starToggle")
         self.btn_detail_speak.setIcon(icon("volume", TEXT_COLORS["muted"], 14))
         self.btn_detail_speak.setCursor(Qt.PointingHandCursor)
         self.btn_detail_speak.setFocusPolicy(Qt.NoFocus)
-        self.btn_detail_speak.setToolTip("朗读韩语发音 (R / .)")
+        self.btn_detail_speak.setToolTip("朗读韩语发音 (R)")
         self.btn_detail_speak.setEnabled(False)
         self.btn_detail_speak.clicked.connect(self.speak_current_word)
-        head.addWidget(self.btn_detail_speak)
+        kr_row.addWidget(self.btn_detail_speak)
 
-        # 重点标记保留为次级控件：三态回答"会不会"，重点回答"想不想再看一眼"，
-        # 是两个独立的轴（一个词可以既"认识"又被标为重点）。
         self.btn_star = QPushButton("标记重点")
         self.btn_star.setObjectName("starToggle")
+        self.btn_star.setIcon(icon("star", TEXT_COLORS["muted"], 14))
         self.btn_star.setCursor(Qt.PointingHandCursor)
         self.btn_star.setFocusPolicy(Qt.NoFocus)
+        self.btn_star.setToolTip("标记/取消重点星标")
         self.btn_star.clicked.connect(self.toggle_star)
-        head.addWidget(self.btn_star)
-        box.addLayout(head)
-
-        self.lbl_detail_seq = QLabel("")
-        self.lbl_detail_seq.setObjectName("quizSeq")
-        self.lbl_detail_seq.setAlignment(Qt.AlignCenter)
-        box.addWidget(self.lbl_detail_seq)
-
-        self.lbl_detail_kr = QLabel("请在左侧选择单词")
-        self.lbl_detail_kr.setObjectName("wordDisplay")
-        self.lbl_detail_kr.setAlignment(Qt.AlignCenter)
-        self.lbl_detail_kr.setWordWrap(True)
-        box.addWidget(make_copyable(self.lbl_detail_kr))
+        kr_row.addWidget(self.btn_star)
+        box.addLayout(kr_row)
 
         self.lbl_detail_cn = QLabel("")
         self.lbl_detail_cn.setObjectName("wordMeaning")
-        self.lbl_detail_cn.setAlignment(Qt.AlignCenter)
         self.lbl_detail_cn.setWordWrap(True)
         box.addWidget(make_copyable(self.lbl_detail_cn))
 
-        # 三态切换（v1.2 修订：原"标记为重点"的二元开关不够用，见 D14）
-        box.addSpacing(4)
+        # 三态切换
         state_row = QHBoxLayout()
         state_row.setSpacing(6)
         self._state_buttons = {}
@@ -680,8 +1137,15 @@ class VocabView(QWidget):
             self._state_buttons[key] = button
         box.addLayout(state_row)
 
+        div = QFrame()
+        div.setObjectName("paneDivider")
+        div.setFrameShape(QFrame.HLine)
+        div.setFrameShadow(QFrame.Plain)
+        box.addWidget(div)
+
+        # 个人笔记编辑区
         note_head = QHBoxLayout()
-        note_label = QLabel("个人笔记")
+        note_label = QLabel("笔记内容")
         note_label.setObjectName("muted")
         note_head.addWidget(note_label)
         note_head.addStretch()
@@ -696,7 +1160,13 @@ class VocabView(QWidget):
             lambda: self._on_note_edited(self.txt_notes, self.lbl_browse_saved)
         )
         box.addWidget(self.txt_notes, 1)
-        return card
+
+        hint = QLabel("按 Esc 可随时收起抽屉 · 离开或切换自动保存")
+        hint.setObjectName("faint")
+        hint.setAlignment(Qt.AlignCenter)
+        box.addWidget(hint)
+
+        return drawer
 
     # ---------------------------------------------------------------- 过词
 
@@ -997,10 +1467,15 @@ class VocabView(QWidget):
         self._save_shortcut.setContext(Qt.WindowShortcut)
         self._save_shortcut.activated.connect(self._save_now)
 
-        # `Ctrl+C` 挂在表格上：作用域跟着表格焦点走
+        # `Ctrl+C` 快捷键：作用域跟着表格与卡片网格焦点走
         self._copy_shortcut = QShortcut(QKeySequence.Copy, self.table)
         self._copy_shortcut.setContext(Qt.WidgetWithChildrenShortcut)
         self._copy_shortcut.activated.connect(self.copy_current_word)
+
+        if hasattr(self, "grid_view"):
+            self._grid_copy_shortcut = QShortcut(QKeySequence.Copy, self.grid_view)
+            self._grid_copy_shortcut.setContext(Qt.WidgetWithChildrenShortcut)
+            self._grid_copy_shortcut.activated.connect(self.copy_current_word)
 
         self._sync_shortcuts()
 
@@ -1376,20 +1851,22 @@ class VocabView(QWidget):
         self._offset = 1 if show_source else 0
         header = self.table.horizontalHeader()
         if show_source:
-            self.table.setColumnCount(5)
-            self.table.setHorizontalHeaderLabels(["词表", "编号", "韩语", "中文释义", "状态"])
+            self.table.setColumnCount(6)
+            self.table.setHorizontalHeaderLabels(["词表", "编号", "韩语", "中文释义", "个人笔记", "状态"])
             for column in (0, 1):
                 header.setSectionResizeMode(column, QHeaderView.ResizeToContents)
+            header.setSectionResizeMode(2, QHeaderView.ResizeToContents)
+            header.setSectionResizeMode(3, QHeaderView.Stretch)
+            header.setSectionResizeMode(4, QHeaderView.Stretch)
+            header.setSectionResizeMode(5, QHeaderView.ResizeToContents)
+        else:
+            self.table.setColumnCount(5)
+            self.table.setHorizontalHeaderLabels(["编号", "韩语", "中文释义", "个人笔记", "状态"])
+            header.setSectionResizeMode(0, QHeaderView.ResizeToContents)
+            header.setSectionResizeMode(1, QHeaderView.ResizeToContents)
             header.setSectionResizeMode(2, QHeaderView.Stretch)
             header.setSectionResizeMode(3, QHeaderView.Stretch)
             header.setSectionResizeMode(4, QHeaderView.ResizeToContents)
-        else:
-            self.table.setColumnCount(4)
-            self.table.setHorizontalHeaderLabels(["编号", "韩语", "中文释义", "状态"])
-            header.setSectionResizeMode(0, QHeaderView.ResizeToContents)
-            header.setSectionResizeMode(1, QHeaderView.Stretch)
-            header.setSectionResizeMode(2, QHeaderView.Stretch)
-            header.setSectionResizeMode(3, QHeaderView.ResizeToContents)
 
     def reload_browse(self):
         """重建浏览表格与元信息条。"""
@@ -1406,48 +1883,47 @@ class VocabView(QWidget):
         self._detail = None
         if hasattr(self, "btn_detail_speak"):
             self.btn_detail_speak.setEnabled(False)
-        self.table.setRowCount(0)
-        for row, source in zip(rows, self._browse_source):
-            self._append_row(row, source)
-        self._update_meta(list_id)
 
-        if not rows:
-            self._show_browse_empty(list_id)
-        else:
-            self._apply_filter(self.search_input.text())
+        self._apply_filter()
 
-    def _append_row(self, row, source):
+    def _append_row(self, row, source=""):
         index = self.table.rowCount()
         self.table.insertRow(index)
         offset = self._offset
 
         if self._show_source:
-            self.table.setItem(index, 0, QTableWidgetItem(source))
+            self.table.setItem(index, 0, QTableWidgetItem(source or row.get("list_name", "")))
 
         item = QTableWidgetItem(str(row["seq"]))
         item.setTextAlignment(Qt.AlignCenter)
         self.table.setItem(index, offset, item)
 
         item = QTableWidgetItem(row["korean"])
-        font = QFont()
+        font = QFont("Pretendard", 12)
         font.setBold(True)
         item.setFont(font)
         self.table.setItem(index, offset + 1, item)
 
-        self.table.setItem(index, offset + 2, QTableWidgetItem(row["meaning"] or ""))
+        if getattr(self, "_test_mode", False):
+            m_item = QTableWidgetItem("••••••")
+            m_item.setForeground(QColor(TEXT_COLORS["faint"]))
+        else:
+            m_item = QTableWidgetItem(row.get("meaning") or "")
+        self.table.setItem(index, offset + 2, m_item)
 
-        self._write_state_cell(index, row["state"] or "")
+        note_str = (row.get("note") or "").strip().replace("\n", " ")
+        n_item = QTableWidgetItem(note_str)
+        n_item.setForeground(QColor(TEXT_COLORS["muted"]))
+        self.table.setItem(index, offset + 3, n_item)
+
+        self._write_state_cell(index, row.get("state") or "")
 
     def _write_state_cell(self, index, state):
-        """写状态列并把待专攻行上淡暖底。
-
-        `QTableWidgetItem` 的底色不走 QSS（见 `ui/theme.py` 的常量说明），
-        所以这里是代码设色——色值仍只来自 `theme.py` 一个来源。
-        """
+        """写状态列并把待专攻行上淡暖底。"""
         item = QTableWidgetItem(STATE_LABELS.get(state, "未过"))
         item.setTextAlignment(Qt.AlignCenter)
         item.setForeground(QColor(state_color(state)))
-        self.table.setItem(index, self._offset + 3, item)
+        self.table.setItem(index, self._offset + 4, item)
 
         background = QColor(ROW_DRILL_BG if state in _TO_DRILL else ROW_BASE_BG)
         for column in range(self.table.columnCount()):
@@ -1455,29 +1931,29 @@ class VocabView(QWidget):
             if cell is not None:
                 cell.setBackground(background)
 
-    # ---------------------------------------------------------------- 复制
+    # ---------------------------------------------------------------- 复制与菜单
 
     def _selected_word_entry(self):
-        """当前选中的词条行；表格没有选中行时返回 `None`。
-
-        行号到 `_browse_rows` 的下标是**一一对应**的：搜索只做隐藏、不重排，也没开排序，
-        这与 `show_details` 用的是同一种映射。
-        """
-        index = self.table.currentRow()
-        if index < 0 or index >= len(self._browse_rows):
+        """当前选中的词条行（网格或表格）。"""
+        if getattr(self, "_view_mode", "grid") == "grid":
+            if hasattr(self, "grid_view") and hasattr(self, "grid_model"):
+                index = self.grid_view.currentIndex()
+                if index.isValid():
+                    return self.grid_model.word_at(index.row(), index.column())
             return None
-        return self._browse_rows[index]
+        else:
+            if hasattr(self, "table"):
+                index = self.table.currentRow()
+                if 0 <= index < len(getattr(self, "_filtered_rows", [])):
+                    return self._filtered_rows[index]
+            return None
 
     def copy_current_word(self, field="korean"):
-        """把当前词条复制到剪贴板。
-
-        默认**只复制韩语**：韩语才是拿去查的东西，把中文释义一起塞进剪贴板，
-        粘到词典里还要再删一次。另两种组合在右键菜单里（`Ctrl+C` 走这条默认路径）。
-        """
-        entry = self._selected_word_entry()
+        """把当前词条复制到剪贴板。"""
+        entry = self._selected_word_entry() or self._detail
         if entry is None:
             return
-        meaning = entry["meaning"] or ""
+        meaning = entry.get("meaning") or ""
         text = {
             "korean": entry["korean"],
             "meaning": meaning,
@@ -1489,46 +1965,100 @@ class VocabView(QWidget):
         show_toast(self.window(), f"已复制「{entry['korean']}」")
 
     def _table_context_menu(self, pos):
-        """表格右键：提供朗读发音与复制选项。"""
-        # 右键先选中指针底下的那一行——否则菜单会作用在"上次选中的行"上，
-        # 而用户看着的是"右键点的那一行"。顺带把详情卡也同步过去。
+        """表格右键菜单。"""
         index = self.table.indexAt(pos)
         if index.isValid():
             self.table.setCurrentCell(index.row(), index.column())
-        menu = QMenu(self)
         entry = self._selected_word_entry()
+        if not entry:
+            return
 
-        speak_action = menu.addAction("朗读发音")
-        speak_action.setEnabled(entry is not None)
+        menu = QMenu(self)
+        a_speak = menu.addAction("朗读发音 (R)")
+        a_speak.triggered.connect(lambda: self.speaker.speak(entry["korean"], manual=True))
         menu.addSeparator()
 
-        actions = []
-        for text, field in (
-            ("复制韩语", "korean"),
-            ("复制释义", "meaning"),
-            ("复制韩语与释义", "both"),
-        ):
-            action = menu.addAction(text)
-            action.setEnabled(entry is not None)
-            actions.append((action, field))
+        a_copy_kr = menu.addAction(f"复制韩语: {entry['korean']}")
+        a_copy_cn = menu.addAction(f"复制释义: {entry.get('meaning', '')}")
+        a_copy_both = menu.addAction("复制韩语与释义 (Tab 分隔)")
+        menu.addSeparator()
+
+        current_state = entry.get("state", "")
+        for key, label in (("known", "认识 (1)"), ("fuzzy", "模糊 (2)"), ("unknown", "不认识 (3)")):
+            action = menu.addAction(f"设为「{label}」")
+            action.setCheckable(True)
+            action.setChecked(current_state == key)
+            action.triggered.connect(lambda _c, s=key, w=entry: self.set_word_state_for_word(w, s))
+
+        menu.addSeparator()
+        is_starred = bool(entry.get("is_starred"))
+        a_star = menu.addAction("取消重点星标" if is_starred else "标记为重点星标")
+        a_star.triggered.connect(lambda: self.toggle_star_for_word(entry))
+
+        a_note = menu.addAction("编辑个人笔记 (N)")
+        a_note.triggered.connect(lambda: self.open_note_drawer(entry))
+
         chosen = menu.exec(self.table.viewport().mapToGlobal(pos))
-        if chosen is speak_action and entry is not None:
-            self.speaker.speak(entry["korean"], manual=True)
+        if chosen == a_copy_kr:
+            self.copy_current_word("korean")
+        elif chosen == a_copy_cn:
+            self.copy_current_word("meaning")
+        elif chosen == a_copy_both:
+            self.copy_current_word("both")
+
+    def _grid_context_menu(self, pos):
+        """卡片网格右键菜单。"""
+        index = self.grid_view.indexAt(pos)
+        if not index.isValid():
             return
-        for action, field in actions:
-            if chosen is action:
-                self.copy_current_word(field)
-                return
+        self.grid_view.setCurrentIndex(index)
+        word = index.data(Qt.UserRole)
+        if not word:
+            return
+
+        menu = QMenu(self)
+        a_speak = menu.addAction("朗读发音 (R)")
+        a_speak.triggered.connect(lambda: self.speaker.speak(word["korean"], manual=True))
+        menu.addSeparator()
+
+        a_copy_kr = menu.addAction(f"复制韩语: {word['korean']}")
+        a_copy_cn = menu.addAction(f"复制释义: {word.get('meaning', '')}")
+        a_copy_both = menu.addAction("复制韩语与释义 (Tab 分隔)")
+        menu.addSeparator()
+
+        current_state = word.get("state", "")
+        for key, label in (("known", "认识 (1)"), ("fuzzy", "模糊 (2)"), ("unknown", "不认识 (3)")):
+            action = menu.addAction(f"设为「{label}」")
+            action.setCheckable(True)
+            action.setChecked(current_state == key)
+            action.triggered.connect(lambda _c, s=key, w=word: self.set_word_state_for_word(w, s))
+
+        menu.addSeparator()
+        is_starred = bool(word.get("is_starred"))
+        a_star = menu.addAction("取消重点星标" if is_starred else "标记为重点星标")
+        a_star.triggered.connect(lambda: self.toggle_star_for_word(word))
+
+        a_note = menu.addAction("编辑个人笔记 (N)")
+        a_note.triggered.connect(lambda: self.open_note_drawer(word))
+
+        chosen = menu.exec(self.grid_view.viewport().mapToGlobal(pos))
+        if chosen == a_copy_kr:
+            self.copy_current_word("korean")
+        elif chosen == a_copy_cn:
+            self.copy_current_word("meaning")
+        elif chosen == a_copy_both:
+            self.copy_current_word("both")
 
     def _update_meta(self, list_id):
+        total_rows = len(getattr(self, "_browse_rows", []))
         if list_id is None:
             self.lbl_meta.setText(
-                f"全部词表 · 共 {len(self._browse_rows)} 个词条"
-                "（同一个韩文词在多份词表里共享笔记与状态）"
+                f"全部词表 · 共 {total_rows} 个词条"
             )
             if hasattr(self, "btn_batch_tts"):
                 self.btn_batch_tts.setVisible(False)
             return
+
         counts = self.database.list_counts(list_id)
         self.lbl_meta.setText(
             f"{self.current_list_name()} · {counts['total']} 个词 · "
@@ -1602,12 +2132,12 @@ class VocabView(QWidget):
             return
 
         button = self.btn_batch_tts
-        button.setVisible(True)
         button.setToolTip(self._batch_tts_tooltip(list_id))
 
         if self._tts_busy() and self._batch_list_id == list_id:
             # 正在下载本表：文案以进度回调为准，但进度还没到（刚启动/启动失败）时
             # 也得让按钮脱离静态态，不能留着"缓存发音 (N 词未存)"这种过期文案
+            button.setVisible(True)
             if not button.text().startswith("下载中"):
                 button.setText("下载中…")
                 button.setEnabled(True)
@@ -1617,20 +2147,27 @@ class VocabView(QWidget):
         if self._tts_busy():
             # 后台在下载别的词表：本表只能排队（点一下入队，再点取消）
             if list_id in self._tts_queue:
+                button.setVisible(True)
                 button.setText(f"排队中 · 第 {self._tts_queue.index(list_id) + 1} 位")
+                button.setEnabled(True)
+                button.setIcon(icon("download"))
             else:
                 uncached = self._uncached_count(list_id)
-                button.setText(f"排队下载（{uncached} 词未存）" if uncached else "排队下载")
-            button.setEnabled(True)
-            button.setIcon(icon("download"))
+                if uncached == 0:
+                    button.setVisible(False)
+                else:
+                    button.setVisible(True)
+                    button.setText(f"排队下载（{uncached} 词未存）")
+                    button.setEnabled(True)
+                    button.setIcon(icon("download"))
             return
 
         uncached = self._uncached_count(list_id)
         if uncached == 0:
-            button.setText("发音已全缓存")
-            button.setEnabled(False)
-            button.setIcon(icon("check-circle", STATE_COLORS["success"]))
+            # 词表发音已全部就绪时直接隐藏该按钮，保持工具条整洁
+            button.setVisible(False)
         else:
+            button.setVisible(True)
             button.setText(f"缓存发音 ({uncached} 词未存)")
             button.setEnabled(True)
             button.setIcon(icon("download"))
@@ -1893,83 +2430,289 @@ class VocabView(QWidget):
                 handler=self.search_input.clear,
             )
         else:
-            self._show_table()
+            self._show_active_view()
 
-    def show_details(self):
-        selected = self.table.selectedItems()
-        if not selected:
-            return
-        index = selected[0].row()
-        if index >= len(self._browse_rows):
+    def _on_search_changed(self, text):
+        self._apply_filter(text)
+
+    def _apply_filter(self, text=None):
+        needle = (self.search_input.text() if text is None else text).strip().lower()
+        state_filter = getattr(self, "_state_filter", "all")
+
+        filtered = []
+        for row in getattr(self, "_browse_rows", []):
+            state = row.get("state", "") or ""
+            if state_filter == "unknown" and state != "unknown":
+                continue
+            elif state_filter == "fuzzy" and state != "fuzzy":
+                continue
+            elif state_filter == "known" and state != "known":
+                continue
+
+            if needle:
+                kr = row.get("korean", "").lower()
+                cn = (row.get("meaning") or "").lower()
+                nt = (row.get("note") or "").lower()
+                if needle not in kr and needle not in cn and needle not in nt:
+                    continue
+
+            filtered.append(row)
+
+        self._filtered_rows = filtered
+
+        # 刷新卡片网格
+        if hasattr(self, "grid_model"):
+            self.grid_model.set_words(filtered)
+
+        # 刷新表格
+        if hasattr(self, "table"):
+            self.table.setRowCount(0)
+            for row in filtered:
+                self._append_row(row, row.get("list_name", ""))
+
+        list_id = self.current_list_id()
+        self._update_meta(list_id)
+
+        if not self._browse_rows:
+            self._show_browse_empty(list_id)
+        elif not filtered:
+            self._show_empty(
+                "没有找到符合筛选条件的词条",
+                "可尝试切换状态筛选胶囊或清除搜索框文字。",
+                action_text="重置筛选",
+                action_icon="x",
+                glyph="search",
+                handler=self._reset_filters,
+            )
+        else:
+            self._show_active_view()
+
+    def _show_active_view(self):
+        if getattr(self, "_view_mode", "grid") == "grid":
+            self.left_stack.setCurrentIndex(0)
+        else:
+            self.left_stack.setCurrentIndex(1)
+
+    def _set_browse_view_mode(self, mode):
+        prev_word = self._selected_word_entry() or self._detail
+        self._view_mode = mode
+        if hasattr(self, "btn_view_grid"):
+            self.btn_view_grid.setChecked(mode == "grid")
+        if hasattr(self, "btn_view_table"):
+            self.btn_view_table.setChecked(mode == "table")
+        if getattr(self, "_filtered_rows", []):
+            self._show_active_view()
+            if prev_word:
+                korean = prev_word.get("korean", "")
+                if mode == "grid" and hasattr(self, "grid_view") and hasattr(self, "grid_model"):
+                    idx = self.grid_model.index_for_word(korean)
+                    if idx.isValid():
+                        self.grid_view.setCurrentIndex(idx)
+                        self.grid_view.scrollTo(idx)
+                elif mode == "table" and hasattr(self, "table"):
+                    offset = self._offset
+                    for r in range(self.table.rowCount()):
+                        item = self.table.item(r, offset + 1)
+                        if item and item.text() == korean:
+                            self.table.setCurrentItem(item)
+                            self.table.scrollToItem(item)
+                            break
+
+    def _on_filter_pill_clicked(self, key):
+        self._state_filter = key
+        self._apply_filter()
+
+    def _reset_filters(self):
+        self.search_input.clear()
+        if hasattr(self, "_filter_pills") and "all" in self._filter_pills:
+            self._filter_pills["all"].setChecked(True)
+        self._state_filter = "all"
+        self._apply_filter()
+
+    def _on_test_mode_toggled(self, checked):
+        self._test_mode = checked
+        if hasattr(self, "grid_delegate"):
+            self.grid_delegate.set_test_mode(checked)
+            self.grid_view.viewport().update()
+
+        if hasattr(self, "table"):
+            offset = self._offset
+            curr_row = self.table.currentRow()
+            for r_idx, row in enumerate(getattr(self, "_filtered_rows", [])):
+                cell = self.table.item(r_idx, offset + 2)
+                if cell is not None:
+                    if checked and r_idx != curr_row:
+                        cell.setText("••••••")
+                        cell.setForeground(QColor(TEXT_COLORS["faint"]))
+                    else:
+                        cell.setText(row.get("meaning") or "")
+                        cell.setForeground(QColor(TEXT_COLORS["primary"]))
+
+    def _on_grid_selection_changed(self):
+        self.grid_view.viewport().update()
+        if hasattr(self, "drawer") and self.drawer.isVisible():
+            word = self._selected_word_entry()
+            if word:
+                self.open_note_drawer(word)
+
+    def _on_table_selection_changed(self):
+        if getattr(self, "_test_mode", False):
+            offset = self._offset
+            curr = self.table.currentRow()
+            for r_idx in range(self.table.rowCount()):
+                cell = self.table.item(r_idx, offset + 2)
+                if cell is not None and r_idx < len(self._filtered_rows):
+                    if r_idx == curr:
+                        cell.setText(self._filtered_rows[r_idx].get("meaning") or "")
+                        cell.setForeground(QColor(TEXT_COLORS["primary"]))
+                    else:
+                        cell.setText("••••••")
+                        cell.setForeground(QColor(TEXT_COLORS["faint"]))
+
+        if hasattr(self, "drawer") and self.drawer.isVisible():
+            word = self._selected_word_entry()
+            if word:
+                self.open_note_drawer(word)
+
+    def _on_grid_action_clicked(self, action, word):
+        if action == "tts":
+            self.speaker.speak(word["korean"], manual=True)
+        elif action == "star":
+            self.toggle_star_for_word(word)
+        elif action == "note":
+            self.open_note_drawer(word)
+        elif action == "state":
+            curr = word.get("state", "") or ""
+            cycle = {"": "known", "known": "fuzzy", "fuzzy": "unknown", "unknown": ""}
+            next_state = cycle.get(curr, "known")
+            self.set_word_state_for_word(word, next_state if next_state else None)
+
+    def open_note_drawer(self, word=None):
+        if word is None:
+            word = self._selected_word_entry()
+        if not word:
             return
         self._flush_note()
+        self._detail = word
 
-        row = self._browse_rows[index]
-        self._detail = row
+        if hasattr(self, "lbl_detail_seq"):
+            self.lbl_detail_seq.setText(f"第 {word.get('seq', '')} 个")
+        if hasattr(self, "lbl_detail_kr"):
+            self.lbl_detail_kr.setText(word.get("korean", ""))
+        if hasattr(self, "lbl_detail_cn"):
+            self.lbl_detail_cn.setText(word.get("meaning", "") or "")
         if hasattr(self, "btn_detail_speak"):
             self.btn_detail_speak.setEnabled(True)
-        self.lbl_detail_seq.setText(f"第 {row['seq']} 个")
-        self.lbl_detail_kr.setText(row["korean"])
-        self.lbl_detail_cn.setText(row["meaning"] or "")
 
-        note = self.database.get_word_note(row["korean"])
-        # 屏蔽信号：载入笔记不该触发"内容变化 → 自动保存"
+        note_data = self.database.get_word_note(word["korean"])
         self.txt_notes.blockSignals(True)
-        self.txt_notes.setPlainText(note["note"] if note else "")
+        self.txt_notes.setPlainText(note_data["note"] if note_data else "")
         self.txt_notes.blockSignals(False)
-        self.txt_notes.setProperty("wordKey", row["korean"])
+        self.txt_notes.setProperty("wordKey", word["korean"])
         self.lbl_browse_saved.setText("")
 
-        self._sync_state_buttons(note["state"] if note else None)
-        self._sync_star_button(bool(note["is_starred"]) if note else False)
+        self._sync_state_buttons(note_data["state"] if note_data else word.get("state"))
+        self._sync_star_button(bool(note_data["is_starred"]) if note_data else bool(word.get("is_starred")))
+
+        self.drawer.setVisible(True)
+        total = self.splitter.width()
+        if total > 500:
+            self.splitter.setSizes([max(300, total - 340), 340])
+        self.txt_notes.setFocus()
+
+    def close_note_drawer(self):
+        self._flush_note()
+        self.drawer.setVisible(False)
+        self.splitter.setSizes([self.splitter.width(), 0])
+        if getattr(self, "_view_mode", "grid") == "grid":
+            self.grid_view.setFocus()
+        else:
+            self.table.setFocus()
+
+    def show_details(self):
+        if hasattr(self, "drawer") and self.drawer.isVisible():
+            word = self._selected_word_entry()
+            if word:
+                self.open_note_drawer(word)
 
     def _sync_state_buttons(self, state):
         for key, button in self._state_buttons.items():
             button.setChecked(key == state)
 
     def _on_detail_state(self, state):
-        """详情卡里手动改状态。再点一次当前态 = 撤销，回到"未过"。
-
-        **不推进断点**：手动整理不是"过词"，不该影响下次从哪儿接着过。
-        """
+        """抽屉里手动改状态。"""
         if self._detail is None:
             return
-        korean = self._detail["korean"]
+        self.set_word_state_for_word(self._detail, state)
+
+    def set_word_state_for_word(self, word, state):
+        korean = word["korean"]
         note = self.database.get_word_note(korean)
-        current = note["state"] if note else None
+        current = (note["state"] if note else None) or word.get("state")
         new_state = None if current == state else state
 
         self.database.set_word_state(korean, new_state)
         self._sync_state_buttons(new_state)
-        self._repaint_detail_row()
+        self._repaint_active_row(korean)
         self._update_meta(self.current_list_id())
 
-    def _repaint_detail_row(self):
-        selected = self.table.selectedItems()
-        if not selected:
-            return
-        index = selected[0].row()
-        if index >= len(self._browse_rows):
-            return
-        row = self._browse_rows[index]
-        note = self.database.get_word_note(row["korean"])
-        state = (note["state"] if note else None) or ""
-        row["state"] = state
-        row["is_starred"] = int(note["is_starred"]) if note else 0
-        self._write_state_cell(index, state)
-
     def toggle_star(self):
-        """重点标记。与三态是两个独立的轴（6.4 第 6 条末句：星标不参与专攻队列）。"""
-        if self._detail is None:
+        entry = self._detail or self._selected_word_entry()
+        if entry is None:
             return
-        korean = self._detail["korean"]
+        self.toggle_star_for_word(entry)
+
+    def toggle_star_for_word(self, word):
+        korean = word["korean"]
         note = self.database.get_word_note(korean)
+        current_text = (
+            self.txt_notes.toPlainText()
+            if self._detail and self._detail.get("korean") == korean
+            else (note["note"] if note else "")
+        )
         is_starred = not bool(note["is_starred"]) if note else True
-        self.database.save_word_note(korean, self.txt_notes.toPlainText(), is_starred)
-        # 刚写的这份就是最新的，别让防抖再写一遍
+        self.database.save_word_note(korean, current_text, is_starred)
         self._pending_editor = self._pending_hint = None
         self._sync_star_button(is_starred)
-        self._repaint_detail_row()
+        self._repaint_active_row(korean)
+        self._update_meta(self.current_list_id())
+
+    def _on_quick_digit_key(self, state):
+        word = self._selected_word_entry()
+        if word:
+            self.set_word_state_for_word(word, state)
+
+    def _repaint_active_row(self, korean):
+        note = self.database.get_word_note(korean)
+        state = (note["state"] if note else None) or ""
+        is_starred = int(note["is_starred"]) if note else 0
+        note_text = (note["note"] if note else "") or ""
+
+        for r in self._browse_rows:
+            if r["korean"] == korean:
+                r["state"] = state
+                r["is_starred"] = is_starred
+                r["note"] = note_text
+                break
+        for r in getattr(self, "_filtered_rows", []):
+            if r["korean"] == korean:
+                r["state"] = state
+                r["is_starred"] = is_starred
+                r["note"] = note_text
+                break
+
+        offset = self._offset
+        for row_idx in range(self.table.rowCount()):
+            kr_item = self.table.item(row_idx, offset + 1)
+            if kr_item is not None and kr_item.text() == korean:
+                n_item = self.table.item(row_idx, offset + 3)
+                if n_item is not None:
+                    n_item.setText(note_text.strip().replace("\n", " "))
+                self._write_state_cell(row_idx, state)
+                break
+
+        if hasattr(self, "grid_view"):
+            self.grid_view.viewport().update()
 
     def _sync_star_button(self, is_starred):
         self.btn_star.setText("已标重点" if is_starred else "标记重点")
@@ -2351,6 +3094,7 @@ class VocabView(QWidget):
         )
         if hint is not None:
             hint.setText("已保存")
+        self._repaint_active_row(korean)
 
     def flush_pending(self):
         """关窗口前冲刷未落库的笔记（`MainWindow.closeEvent` 调用）。"""
@@ -2383,6 +3127,13 @@ class VocabView(QWidget):
             self._speak_shortcut.setEnabled(False)
         super().hideEvent(event)
 
+    def keyPressEvent(self, event):
+        if event.key() == Qt.Key_Escape and hasattr(self, "drawer") and self.drawer.isVisible():
+            self.close_note_drawer()
+            event.accept()
+            return
+        super().keyPressEvent(event)
+
     # ==================================================================
     # 空状态与提示条
     # ==================================================================
@@ -2391,10 +3142,10 @@ class VocabView(QWidget):
                     glyph="folder-open", handler=None):
         self.empty.set_content(title, description, action_text, action_icon, glyph)
         self._empty_action = handler
-        self.left_stack.setCurrentIndex(1)
+        self.left_stack.setCurrentIndex(2)
 
     def _show_table(self):
-        self.left_stack.setCurrentIndex(0)
+        self._show_active_view()
 
     def _on_empty_action(self):
         if self._empty_action:

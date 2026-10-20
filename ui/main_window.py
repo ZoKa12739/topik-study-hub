@@ -23,7 +23,18 @@ from PySide6.QtWidgets import (
     QVBoxLayout,
     QWidget,
 )
-from PySide6.QtCore import QAbstractNativeEventFilter, QEvent, QObject, QSize, Qt, QTimer, Signal
+from PySide6.QtCore import (
+    Property,
+    QAbstractNativeEventFilter,
+    QEasingCurve,
+    QEvent,
+    QObject,
+    QPropertyAnimation,
+    QSize,
+    Qt,
+    QTimer,
+    Signal,
+)
 from PySide6.QtGui import QCursor, QKeySequence, QPixmap, QShortcut
 
 from core.database import StudyDatabase
@@ -43,6 +54,29 @@ if sys.platform == "win32":
             ("cyTopHeight", ctypes.c_int),
             ("cyBottomHeight", ctypes.c_int),
         ]
+
+
+class _SidebarToggleButton(QPushButton):
+    """顶部栏侧边栏折叠/展开按钮。"""
+
+    def __init__(self, parent=None):
+        super().__init__(parent)
+        self.setObjectName("sidebarToggleBtn")
+        self.setFixedSize(28, 28)
+        self.setIconSize(QSize(16, 16))
+        self.setCursor(Qt.PointingHandCursor)
+        self.setFocusPolicy(Qt.NoFocus)
+        self._normal_icon = icon("sidebar", TEXT_COLORS["secondary"], 16)
+        self._hover_icon = icon("sidebar", TEXT_COLORS["primary"], 16)
+        self.setIcon(self._normal_icon)
+
+    def enterEvent(self, event):
+        self.setIcon(self._hover_icon)
+        super().enterEvent(event)
+
+    def leaveEvent(self, event):
+        self.setIcon(self._normal_icon)
+        super().leaveEvent(event)
 
 
 class _WindowControlButton(QPushButton):
@@ -136,7 +170,9 @@ class NavigationWidget(QWidget):
         self.box.setSpacing(2)
 
         self._buttons = []
+        self._button_titles = []
         self._current_row = -1
+        self._collapsed = False
 
         # 分组 1：学习
         self.lbl_study = QLabel("学习")
@@ -158,17 +194,38 @@ class NavigationWidget(QWidget):
         if index == 3:
             self.box.addWidget(self.lbl_materials)
 
-        btn = QPushButton(title)
+        btn = QPushButton("" if self._collapsed else title)
         btn.setObjectName("navItem")
         btn.setIcon(icon_obj)
         btn.setIconSize(QSize(16, 16))
         btn.setCheckable(True)
         btn.setCursor(Qt.PointingHandCursor)
         btn.setFixedHeight(32)
+        if self._collapsed:
+            btn.setToolTip(f"{title} (Ctrl+{index + 1})")
+            btn.setProperty("collapsed", True)
         btn.clicked.connect(lambda _, idx=index: self.setCurrentRow(idx))
 
         self._buttons.append(btn)
+        self._button_titles.append(title)
         self.box.addWidget(btn)
+
+    def set_collapsed(self, collapsed: bool):
+        self._collapsed = collapsed
+        self.lbl_study.setVisible(not collapsed)
+        self.lbl_materials.setVisible(not collapsed)
+        for i, btn in enumerate(self._buttons):
+            title = self._button_titles[i] if i < len(self._button_titles) else ""
+            if collapsed:
+                btn.setText("")
+                btn.setToolTip(f"{title} (Ctrl+{i + 1})")
+                btn.setProperty("collapsed", True)
+            else:
+                btn.setText(title)
+                btn.setToolTip("")
+                btn.setProperty("collapsed", False)
+            btn.style().unpolish(btn)
+            btn.style().polish(btn)
 
     def count(self):
         return len(self._buttons)
@@ -176,7 +233,8 @@ class NavigationWidget(QWidget):
     def item(self, index):
         if 0 <= index < len(self._buttons):
             btn = self._buttons[index]
-            return NavigationItemProxy(btn.text(), btn.icon())
+            title = self._button_titles[index] if index < len(self._button_titles) else btn.text()
+            return NavigationItemProxy(title, btn.icon())
         return None
 
     def currentRow(self):
@@ -222,6 +280,8 @@ class MainWindow(QMainWindow):
     PREWARM_DELAY_MS = 2000
     RESIZE_MARGIN = 6
     DRAG_BAR_HEIGHT = 36
+    SIDEBAR_EXPANDED_WIDTH = 220
+    SIDEBAR_COLLAPSED_WIDTH = 56
 
     def __init__(self):
         super().__init__()
@@ -244,10 +304,19 @@ class MainWindow(QMainWindow):
         self._prewarm_scheduled = False
         self._closing = False
         self.database = StudyDatabase()
+        self._sidebar_collapsed = (self.database.get_setting("sidebar_collapsed", "0") == "1")
         self.setWindowTitle("TOPIK Study Hub")
         self.resize(1180, 760)
         self.setMinimumSize(1120, 650)
         self.init_ui()
+
+    def _get_sidebar_width(self):
+        return self.sidebar_frame.width()
+
+    def _set_sidebar_width(self, w):
+        self.sidebar_frame.setFixedWidth(w)
+
+    sidebar_width = Property(int, _get_sidebar_width, _set_sidebar_width)
 
     def init_ui(self):
         central_widget = QWidget()
@@ -257,13 +326,17 @@ class MainWindow(QMainWindow):
         root_layout.setContentsMargins(0, 0, 0, 0)
         root_layout.setSpacing(0)
 
-        # 顶部 QQ 式 36px 通栏（左侧品牌图标+应用名，右侧悬浮最小化/最大化/关闭）
+        # 顶部 QQ 式 36px 通栏（左侧折叠切换按钮+品牌图标+应用名，右侧悬浮最小化/最大化/关闭）
         self.top_bar = QFrame()
         self.top_bar.setObjectName("topTitleBar")
         self.top_bar.setFixedHeight(self.DRAG_BAR_HEIGHT)
         top_layout = QHBoxLayout(self.top_bar)
-        top_layout.setContentsMargins(12, 0, 12, 0)
-        top_layout.setSpacing(0)
+        top_layout.setContentsMargins(14, 0, 12, 0)
+        top_layout.setSpacing(10)
+
+        self.btn_sidebar_toggle = _SidebarToggleButton(self)
+        self.btn_sidebar_toggle.clicked.connect(self.toggle_sidebar)
+        top_layout.addWidget(self.btn_sidebar_toggle)
 
         brand_container = QWidget()
         brand_layout = QHBoxLayout(brand_container)
@@ -304,11 +377,12 @@ class MainWindow(QMainWindow):
 
         sidebar = QFrame()
         sidebar.setObjectName("sidebar")
-        sidebar.setFixedWidth(220)
+        sidebar.setFixedWidth(self.SIDEBAR_EXPANDED_WIDTH)
         self.sidebar_frame = sidebar
         sidebar_layout = QVBoxLayout(sidebar)
         sidebar_layout.setContentsMargins(12, 8, 12, 12)
         sidebar_layout.setSpacing(0)
+        self.sidebar_layout = sidebar_layout
 
         self.sidebar = NavigationWidget()
         sidebar_layout.addWidget(self.sidebar)
@@ -335,6 +409,7 @@ class MainWindow(QMainWindow):
         footer.setObjectName("sidebarFooter")
         footer.setWordWrap(True)
         sidebar_layout.addWidget(footer)
+        self.footer = footer
 
         self.stacked_widget = QStackedWidget()
         self.stacked_widget.setObjectName("mainContentIsland")
@@ -344,6 +419,14 @@ class MainWindow(QMainWindow):
         root_layout.addLayout(main_layout, 1)
 
         self.setup_tabs()
+        self._update_sidebar_toggle_ui()
+        if self._sidebar_collapsed:
+            self._apply_sidebar_collapsed_visuals(True)
+            self.sidebar_frame.setFixedWidth(self.SIDEBAR_COLLAPSED_WIDTH)
+        else:
+            self._apply_sidebar_collapsed_visuals(False)
+            self.sidebar_frame.setFixedWidth(self.SIDEBAR_EXPANDED_WIDTH)
+
         # 导航行 → 内容区。忽略 -1（清空选中，切到设置页时会发生）
         self.sidebar.currentRowChanged.connect(self._on_nav_changed)
         self.sidebar.setCurrentRow(0)
@@ -485,6 +568,73 @@ class MainWindow(QMainWindow):
             shortcut = QShortcut(QKeySequence(f"Ctrl+{index + 1}"), self)
             shortcut.activated.connect(lambda i=index: self._goto_page(i))
         QShortcut(QKeySequence("Ctrl+,"), self).activated.connect(self.open_settings)
+        # 侧边栏折叠/展开快捷键 Ctrl+B
+        QShortcut(QKeySequence("Ctrl+B"), self).activated.connect(self.toggle_sidebar)
+
+    def _update_sidebar_toggle_ui(self):
+        if not hasattr(self, "btn_sidebar_toggle") or self.btn_sidebar_toggle is None:
+            return
+        tip = "展开侧边栏 (Ctrl+B)" if self._sidebar_collapsed else "收起侧边栏 (Ctrl+B)"
+        self.btn_sidebar_toggle.setToolTip(tip)
+
+    def toggle_sidebar(self):
+        self.set_sidebar_collapsed(not self._sidebar_collapsed, animate=True)
+
+    def set_sidebar_collapsed(self, collapsed: bool, animate: bool = True):
+        self._sidebar_collapsed = collapsed
+        self.database.set_setting("sidebar_collapsed", "1" if collapsed else "0")
+        self._update_sidebar_toggle_ui()
+
+        target_width = self.SIDEBAR_COLLAPSED_WIDTH if collapsed else self.SIDEBAR_EXPANDED_WIDTH
+
+        if not animate:
+            if hasattr(self, "_sidebar_anim") and self._sidebar_anim.state() == QPropertyAnimation.State.Running:
+                self._sidebar_anim.stop()
+            self._apply_sidebar_collapsed_visuals(collapsed)
+            self.sidebar_frame.setFixedWidth(target_width)
+            return
+
+        if hasattr(self, "_sidebar_anim") and self._sidebar_anim.state() == QPropertyAnimation.State.Running:
+            self._sidebar_anim.stop()
+
+        if collapsed:
+            # 收起时：先立即隐去文字和标题，确保宽度缩小过程中内容区平滑左移，无文字换行抖动
+            self._apply_sidebar_collapsed_visuals(True)
+        else:
+            # 展开时：内边距先恢复，避免展开过程中按钮贴边
+            self.sidebar_layout.setContentsMargins(12, 8, 12, 12)
+
+        self._sidebar_anim = QPropertyAnimation(self, b"sidebar_width")
+        self._sidebar_anim.setDuration(160)
+        self._sidebar_anim.setStartValue(self.sidebar_frame.width())
+        self._sidebar_anim.setEndValue(target_width)
+        self._sidebar_anim.setEasingCurve(QEasingCurve.Type.OutCubic)
+
+        if not collapsed:
+            self._sidebar_anim.finished.connect(self._on_sidebar_expand_finished)
+
+        self._sidebar_anim.start()
+
+    def _on_sidebar_expand_finished(self):
+        if not self._sidebar_collapsed:
+            self._apply_sidebar_collapsed_visuals(False)
+
+    def _apply_sidebar_collapsed_visuals(self, collapsed: bool):
+        self.sidebar.set_collapsed(collapsed)
+        if collapsed:
+            self.sidebar_layout.setContentsMargins(8, 8, 8, 12)
+            self.btn_settings.setText("")
+            self.btn_settings.setToolTip("设置与数据 (Ctrl+,)")
+            self.btn_settings.setProperty("collapsed", True)
+            self.footer.setVisible(False)
+        else:
+            self.sidebar_layout.setContentsMargins(12, 8, 12, 12)
+            self.btn_settings.setText("设置与数据")
+            self.btn_settings.setToolTip("")
+            self.btn_settings.setProperty("collapsed", False)
+            self.footer.setVisible(True)
+        self.btn_settings.style().unpolish(self.btn_settings)
+        self.btn_settings.style().polish(self.btn_settings)
 
     def _goto_page(self, index):
         self.sidebar.setCurrentRow(index)

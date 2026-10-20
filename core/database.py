@@ -1351,7 +1351,7 @@ class StudyDatabase:
             for row in self.connection.execute(
                 """
                 SELECT wl.id AS list_id, wl.name AS list_name, w.seq, w.korean, w.meaning,
-                       w.word_key, COALESCE(n.state, '') AS state,
+                       w.word_key, COALESCE(n.state, '') AS state, n.note,
                        COALESCE(n.is_starred, 0) AS is_starred
                 FROM words w
                 JOIN word_lists wl ON wl.id = w.list_id
